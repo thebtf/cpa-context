@@ -1,0 +1,38 @@
+module github.com/thebtf/cpa-context
+
+go 1.26.10
+
+require (
+	github.com/router-for-me/CLIProxyAPI/v8 v8.1.4
+	github.com/tiktoken-go/tokenizer v0.8.1
+	gopkg.in/yaml.v3 v3.0.1
+)
+
+require (
+	github.com/MoeForge/moego v0.1.0-alpha.5 // indirect
+	github.com/andybalholm/brotli v1.0.6 // indirect
+	github.com/cespare/xxhash/v2 v2.3.0 // indirect
+	github.com/dlclark/regexp2/v2 v2.5.1 // indirect
+	github.com/gabriel-vasile/mimetype v1.4.3 // indirect
+	github.com/gin-contrib/sse v0.1.0 // indirect
+	github.com/gin-gonic/gin v1.10.1 // indirect
+	github.com/go-playground/locales v0.14.1 // indirect
+	github.com/go-playground/universal-translator v0.18.1 // indirect
+	github.com/go-playground/validator/v10 v10.20.0 // indirect
+	github.com/google/uuid v1.6.0 // indirect
+	github.com/klauspost/compress v1.17.4 // indirect
+	github.com/leodido/go-urn v1.4.0 // indirect
+	github.com/mattn/go-isatty v0.0.20 // indirect
+	github.com/pelletier/go-toml/v2 v2.4.3-0.20260624044523-35f78d5908f1 // indirect
+	github.com/redis/go-redis/v9 v9.19.0 // indirect
+	github.com/sirupsen/logrus v1.9.3 // indirect
+	github.com/ugorji/go/codec v1.2.12 // indirect
+	go.etcd.io/bbolt v1.5.0 // indirect
+	go.uber.org/atomic v1.11.0 // indirect
+	golang.org/x/crypto v0.58.0 // indirect
+	golang.org/x/net v0.62.0 // indirect
+	golang.org/x/sys v0.49.0 // indirect
+	golang.org/x/text v0.43.0 // indirect
+	google.golang.org/protobuf v1.34.1 // indirect
+	gopkg.in/natefinch/lumberjack.v2 v2.2.1 // indirect
+)
