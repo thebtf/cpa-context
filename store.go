@@ -113,8 +113,8 @@ type session struct {
 	// MaxOutput is the output cap the client requested on the newest request.
 	// It is not the context window: CPA exposes no model-window information to
 	// plugins, so the dashboard must not pretend to know it.
-	MaxOutput int64 `json:"maxOutputTokens,omitempty"`
-	Compactions   int   `json:"compactions"`
+	MaxOutput   int64 `json:"maxOutputTokens,omitempty"`
+	Compactions int   `json:"compactions"`
 	// Unsourced marks a conversation CPA could not identify: the client sent no
 	// session header, so this card is one request rather than one conversation.
 	Unsourced bool `json:"unsourced,omitempty"`
@@ -209,26 +209,35 @@ func (s *store) recordRequest(snap *snapshot) {
 
 // recordCompletion closes the lifecycle of a request, which is the only signal
 // for a request that never produced a usage record.
-func (s *store) recordCompletion(traceID, requestID, outcome, message string) {
+func (s *store) recordCompletion(traceID, requestID, outcome, message string) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	snap, ok := s.pending[traceID]
 	if !ok {
-		return
+		return false
 	}
 	if snap.RequestID == "" {
 		snap.RequestID = requestID
 	}
 	snap.Outcome = outcome
 	snap.Error = message
-	if outcome == "failed" || outcome == "rejected" {
-		snap.Failed = true
-	}
-	// Keep it pending for the usage record, which can arrive after completion,
-	// but bound how long an unfinished request waits.
 	if snap.CompletedAt.IsZero() {
 		snap.CompletedAt = time.Now()
 	}
+
+	// A rejected or canceled request never reaches a provider, so no usage record
+	// will ever arrive to finish it. Keep what the interceptor measured and file
+	// it now, otherwise a request the user never saw fail disappears from the
+	// dashboard entirely. A completed or failed one still expects its usage
+	// record, which carries the authoritative counters.
+	if outcome != "rejected" && outcome != "canceled" {
+		return true
+	}
+	snap.Failed = true
+	delete(s.pending, traceID)
+	s.applyToSessionLocked(snap)
+	s.rememberLocked(snap)
+	return true
 }
 
 // usage is the provider-reported accounting for one request.
@@ -560,18 +569,18 @@ func (s *store) snapshotSessions() []*session {
 // agentNode is one member of an agent family: this conversation, its parent,
 // and its children, as CPA identified them from session headers.
 type agentNode struct {
-	ID         string  `json:"id"`
-	Label      string  `json:"label,omitempty"`
-	ClientType string  `json:"clientType,omitempty"`
-	AgentName  string  `json:"agentName,omitempty"`
-	IsSubagent bool    `json:"isSubagent,omitempty"`
-	IsFork     bool    `json:"isFork,omitempty"`
-	Requests   int     `json:"requests"`
+	ID         string `json:"id"`
+	Label      string `json:"label,omitempty"`
+	ClientType string `json:"clientType,omitempty"`
+	AgentName  string `json:"agentName,omitempty"`
+	IsSubagent bool   `json:"isSubagent,omitempty"`
+	IsFork     bool   `json:"isFork,omitempty"`
+	Requests   int    `json:"requests"`
 	// Context is the prompt size of this member's newest request.
 	Context int64 `json:"contextTokens"`
 	// Output is what this member has generated in total.
-	Output int64 `json:"outputTokens"`
-	Compactions int `json:"compactions"`
+	Output      int64 `json:"outputTokens"`
+	Compactions int   `json:"compactions"`
 	// Children are the conversations that named this one as their parent.
 	Children []agentNode `json:"children,omitempty"`
 }

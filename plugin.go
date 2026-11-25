@@ -286,12 +286,15 @@ func projectFromMetadata(metadata map[string]any) string {
 }
 
 type completionRequest struct {
-	RequestID  string `json:"RequestID"`
-	TraceID    string `json:"TraceID"`
-	Outcome    string `json:"Outcome"`
-	StatusCode int    `json:"StatusCode"`
-	Error      string `json:"Error"`
-	Model      string `json:"Model"`
+	RequestID      string `json:"RequestID"`
+	TraceID        string `json:"TraceID"`
+	SourceFormat   string `json:"SourceFormat"`
+	Outcome        string `json:"Outcome"`
+	StatusCode     int    `json:"StatusCode"`
+	Error          string `json:"Error"`
+	Model          string `json:"Model"`
+	RequestedModel string `json:"RequestedModel"`
+	Stream         bool   `json:"Stream"`
 }
 
 func (p *plugin) complete(raw []byte) any {
@@ -299,6 +302,10 @@ func (p *plugin) complete(raw []byte) any {
 	if err := json.Unmarshal(raw, &req); err != nil {
 		return struct{}{}
 	}
+	// A completion with no matching interception means this plugin was not in the
+	// chain for that request, so there is nothing to correct. CPA rejects an
+	// unroutable model before it creates the lifecycle this event belongs to, and
+	// such a request never reaches an interceptor either.
 	p.store.recordCompletion(req.TraceID, req.RequestID, req.Outcome, req.Error)
 	return struct{}{}
 }

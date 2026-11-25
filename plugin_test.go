@@ -464,3 +464,68 @@ func TestOrphanIsItsOwnRoot(t *testing.T) {
 		t.Fatalf("an orphan must appear as its own root, got %+v", roots)
 	}
 }
+
+func TestRejectedRequestReachesTheDashboard(t *testing.T) {
+	p := newPlugin(nil)
+	p.cfg.Enabled = true
+	body := []byte("{\"model\":\"m\",\"messages\":[{\"role\":\"user\",\"content\":\"blocked turn\"}]}")
+	intercept, _ := json.Marshal(map[string]any{
+		"RequestID": "r-rej", "TraceID": "t-rej", "SourceFormat": "openai",
+		"Model": "m", "Body": body,
+	})
+	p.handle("request.intercept_before", intercept)
+
+	// Another interceptor terminated the request: no provider, so no usage.
+	completion, _ := json.Marshal(map[string]any{
+		"RequestID": "r-rej", "TraceID": "t-rej", "Outcome": "rejected",
+		"StatusCode": 403, "Error": "blocked by policy",
+	})
+	p.handle("request.complete", completion)
+
+	sessions := p.store.snapshotSessions()
+	if len(sessions) != 1 {
+		t.Fatalf("a rejected request must still appear, saw %d conversations", len(sessions))
+	}
+	if sessions[0].Failed != 1 {
+		t.Fatalf("failed count = %d, want 1", sessions[0].Failed)
+	}
+	if len(sessions[0].Timeline) != 1 {
+		t.Fatalf("timeline = %d points, want 1", len(sessions[0].Timeline))
+	}
+}
+
+func TestCompletedRequestStillWaitsForUsage(t *testing.T) {
+	p := newPlugin(nil)
+	p.cfg.Enabled = true
+	body := []byte("{\"model\":\"m\",\"messages\":[{\"role\":\"user\",\"content\":\"ok turn\"}]}")
+	intercept, _ := json.Marshal(map[string]any{
+		"RequestID": "r-ok", "TraceID": "t-ok", "SourceFormat": "openai",
+		"Model": "m", "Body": body,
+	})
+	p.handle("request.intercept_before", intercept)
+
+	// A successful execution completes first, then the usage record lands.
+	completion, _ := json.Marshal(map[string]any{
+		"RequestID": "r-ok", "TraceID": "t-ok", "Outcome": "succeeded", "StatusCode": 200,
+	})
+	p.handle("request.complete", completion)
+	if got := p.store.snapshotSessions(); len(got) != 0 {
+		t.Fatal("a completed request must wait for its usage record, not be filed early")
+	}
+
+	usageRaw, _ := json.Marshal(map[string]any{
+		"TraceID": "t-ok", "Model": "m", "SessionID": "s-ok",
+		"Detail": map[string]any{"InputTokens": 500, "TotalTokens": 500},
+	})
+	p.handle("usage.handle", usageRaw)
+	sessions := p.store.snapshotSessions()
+	if len(sessions) != 1 {
+		t.Fatalf("conversations = %d, want 1", len(sessions))
+	}
+	if sessions[0].Requests != 1 {
+		t.Fatalf("requests = %d, want exactly 1: the request must not be counted twice", sessions[0].Requests)
+	}
+	if sessions[0].LastContext != 500 {
+		t.Fatalf("last context = %d, want 500", sessions[0].LastContext)
+	}
+}
