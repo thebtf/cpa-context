@@ -83,7 +83,7 @@ const (
 	eventModelChange  = "model"
 	eventCacheMiss    = "cache"
 	eventFirstRequest = "first"
-	eventToolBurst    = "tools"
+	eventTrim         = "trim"
 )
 
 // session is the per-conversation aggregate the dashboard lists.
@@ -114,6 +114,9 @@ type session struct {
 	// plugins, so the dashboard must not pretend to know it.
 	MaxOutput int64 `json:"maxOutputTokens,omitempty"`
 	Compactions   int   `json:"compactions"`
+	// Unsourced marks a conversation CPA could not identify: the client sent no
+	// session header, so this card is one request rather than one conversation.
+	Unsourced bool `json:"unsourced,omitempty"`
 	// Composition is the calibrated split of the newest request.
 	Composition map[string]int `json:"composition,omitempty"`
 	// Estimated is the pre-calibration split of the newest request, kept so the
@@ -334,13 +337,20 @@ func (s *store) recordUsage(u usage) {
 
 // applyToSessionLocked folds one finished snapshot into its session aggregate.
 func (s *store) applyToSessionLocked(snap *snapshot) {
+	// A request with no session identity must not be folded into one shared
+	// bucket: unrelated calls would look like a single growing conversation.
+	// Key it by its own request so each stands alone and says why.
 	id := snap.SessionID
-	if id == "" {
-		id = "unscoped"
+	unsourced := id == ""
+	if unsourced {
+		id = firstNonEmpty(snap.TraceID, snap.RequestID)
+		if id == "" {
+			id = "unidentified"
+		}
 	}
 	sess, ok := s.sessions[id]
 	if !ok {
-		sess = &session{ID: id, FirstSeen: snap.StartedAt}
+		sess = &session{ID: id, FirstSeen: snap.StartedAt, Unsourced: unsourced}
 		s.sessions[id] = sess
 		s.evictSessionsLocked()
 	}
@@ -453,7 +463,27 @@ func (s *store) recordEventsLocked(sess *session, snap *snapshot) {
 			Detail:    previousModel + " → " + snap.Model,
 		})
 	}
-	if previous > 0 && snap.CacheReadTokens == 0 && snap.InputTokens > 0 {
+	// A prompt that shrank without CPA flagging a compaction means the client cut
+	// its own history: truncation, a dropped attachment, a manual reset. Small
+	// dips are ordinary turn boundaries and stay quiet.
+	if previous > 0 && !snap.Compaction && snap.InputTokens < previous {
+		if drop := previous - snap.InputTokens; drop*100 >= previous*20 {
+			s.pushEventLocked(event{
+				At:        snap.StartedAt,
+				SessionID: sess.ID,
+				Kind:      eventTrim,
+				Detail:    snap.Model,
+				Delta:     -drop,
+			})
+		}
+	}
+
+	// A shrinking prompt is a trim, not a cache miss: the provider read nothing
+	// new because there was nothing new to read. Reporting both would count one
+	// event twice.
+	trimmed := previous > 0 && !snap.Compaction && snap.InputTokens < previous &&
+		(previous-snap.InputTokens)*100 >= previous*20
+	if previous > 0 && !trimmed && snap.CacheReadTokens == 0 && snap.InputTokens > 0 {
 		s.pushEventLocked(event{
 			At:        snap.StartedAt,
 			SessionID: sess.ID,

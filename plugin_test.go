@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 
 	coreusage "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/usage"
@@ -262,5 +263,134 @@ func TestDisabledPluginCollectsNothing(t *testing.T) {
 	p.handle("usage.handle", usageRaw)
 	if got := p.store.snapshotSessions(); len(got) != 0 {
 		t.Fatalf("disabled plugin recorded %d sessions", len(got))
+	}
+}
+
+func TestUnidentifiedRequestsDoNotShareOneBucket(t *testing.T) {
+	p := newPlugin(nil)
+	p.cfg.Enabled = true
+	for _, trace := range []string{"trace-a", "trace-b"} {
+		raw, _ := json.Marshal(map[string]any{
+			"TraceID": trace, "Model": "m",
+			"Detail": map[string]any{"InputTokens": 100, "TotalTokens": 100},
+		})
+		p.handle("usage.handle", raw)
+	}
+	sessions := p.store.snapshotSessions()
+	if len(sessions) != 2 {
+		t.Fatalf("got %d sessions, want 2: unrelated calls must not merge", len(sessions))
+	}
+	for _, sess := range sessions {
+		if !sess.Unsourced {
+			t.Errorf("session %q should be marked unsourced", sess.ID)
+		}
+		if sess.Requests != 1 {
+			t.Errorf("session %q has %d requests, want 1", sess.ID, sess.Requests)
+		}
+	}
+}
+
+func TestShrinkingPromptRecordsTrimEvent(t *testing.T) {
+	p := newPlugin(nil)
+	p.cfg.Enabled = true
+	send := func(trace string, prefix int) {
+		body := []byte("{\"model\":\"m\",\"messages\":[{\"role\":\"user\",\"content\":\"" + strings.Repeat("x", prefix) + "\"}]}")
+		intercept, _ := json.Marshal(map[string]any{
+			"RequestID": trace, "TraceID": trace, "SourceFormat": "openai",
+			"Model": "m", "Body": body,
+		})
+		p.handle("request.intercept_before", intercept)
+		usageRaw, _ := json.Marshal(map[string]any{
+			"TraceID": trace, "Model": "m", "SessionID": "s-trim",
+			"Detail": map[string]any{"InputTokens": prefix * 10, "TotalTokens": prefix * 10},
+		})
+		p.handle("usage.handle", usageRaw)
+	}
+	send("t1", 1000)
+	send("t2", 200)
+
+	found := false
+	for _, ev := range p.store.snapshotEvents("s-trim", 20) {
+		if ev.Kind == eventTrim {
+			found = true
+			if ev.Delta >= 0 {
+				t.Errorf("trim delta = %d, want negative", ev.Delta)
+			}
+		}
+	}
+	if !found {
+		t.Fatal("shrinking prompt produced no trim event")
+	}
+}
+
+func TestSmallDipIsNotATrim(t *testing.T) {
+	p := newPlugin(nil)
+	p.cfg.Enabled = true
+	send := func(trace string, tokens int) {
+		usageRaw, _ := json.Marshal(map[string]any{
+			"TraceID": trace, "Model": "m", "SessionID": "s-dip",
+			"Detail": map[string]any{"InputTokens": tokens, "TotalTokens": tokens},
+		})
+		p.handle("usage.handle", usageRaw)
+	}
+	send("d1", 1000)
+	send("d2", 950)
+	for _, ev := range p.store.snapshotEvents("s-dip", 20) {
+		if ev.Kind == eventTrim {
+			t.Fatalf("a 5%% dip is an ordinary turn boundary, not a trim: %+v", ev)
+		}
+	}
+}
+
+func TestStreamingRequestKeepsComposition(t *testing.T) {
+	p := newPlugin(nil)
+	p.cfg.Enabled = true
+	body := []byte("{\"model\":\"m\",\"stream\":true,\"messages\":[{\"role\":\"user\",\"content\":\"streamed turn\"}]}")
+	intercept, _ := json.Marshal(map[string]any{
+		"RequestID": "r-stream", "TraceID": "t-stream", "SourceFormat": "openai",
+		"Model": "m", "Stream": true, "Body": body,
+	})
+	p.handle("request.intercept_before", intercept)
+	usageRaw, _ := json.Marshal(map[string]any{
+		"TraceID": "t-stream", "Model": "m", "SessionID": "s-stream", "Stream": true,
+		"Detail": map[string]any{"InputTokens": 3000, "OutputTokens": 40, "TotalTokens": 3040},
+	})
+	p.handle("usage.handle", usageRaw)
+
+	sess := p.store.snapshotSession("s-stream")
+	if sess == nil {
+		t.Fatal("streaming session missing")
+	}
+	sum := 0
+	for _, value := range sess.Composition {
+		sum += value
+	}
+	if sum != 3000 {
+		t.Fatalf("streaming composition sums to %d, want 3000", sum)
+	}
+}
+
+func TestTrimDoesNotAlsoReportACacheMiss(t *testing.T) {
+	p := newPlugin(nil)
+	p.cfg.Enabled = true
+	send := func(trace string, tokens int) {
+		usageRaw, _ := json.Marshal(map[string]any{
+			"TraceID": trace, "Model": "m", "SessionID": "s-both",
+			"Detail": map[string]any{"InputTokens": tokens, "TotalTokens": tokens},
+		})
+		p.handle("usage.handle", usageRaw)
+	}
+	send("b1", 5000)
+	send("b2", 300)
+
+	kinds := map[string]int{}
+	for _, ev := range p.store.snapshotEvents("s-both", 20) {
+		kinds[ev.Kind]++
+	}
+	if kinds[eventTrim] != 1 {
+		t.Fatalf("trim events = %d, want 1 (%v)", kinds[eventTrim], kinds)
+	}
+	if kinds[eventCacheMiss] != 0 {
+		t.Fatalf("a trim must not also be reported as a cache miss: %v", kinds)
 	}
 }

@@ -102,7 +102,7 @@ const COLORS = {
 };
 const EVENT_LABELS = {
   compaction: "compacted", cache: "cache miss", model: "model switched",
-  first: "conversation started", tools: "tool burst"
+  first: "conversation started", trim: "history trimmed"
 };
 const LABELS = {
   system: "System prompt", tools: "Tool schemas", user: "User messages",
@@ -155,6 +155,7 @@ function renderList() {
       '<span class="meta">' + fmt(s.lastContextTokens) + "</span></div>" +
       '<div class="meta">' + esc(model) + " · " + s.requests + " req · " +
       esc(when) + "</div>" +
+      (s.unsourced ? '<div class="meta">no session header</div>' : "") +
       bar(s.composition, s.lastContextTokens) + "</div>";
   }).join("");
   for (const card of list.querySelectorAll(".card")) {
