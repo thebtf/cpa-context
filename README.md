@@ -17,6 +17,15 @@ request to request.
 | Window over time | How the prompt grew request by request, and where it compacted |
 | What the newest request carried | Every block of the newest prompt, largest first, expandable to its text |
 | Window events | When the window changed for a reason other than the reply |
+| Agent family | Which conversations are children of which, and what each one carries |
+
+## Agent families
+
+CPA resolves session identity and the parent relationship from the client's own
+session headers. The dashboard uses that to nest conversations: a subagent, a
+fork, and a plain follow-up conversation all appear under the conversation that
+spawned them, each with its own context size. A conversation whose parent is not
+in the observed window appears as its own root rather than as a dangling edge.
 
 ## How the numbers are produced
 

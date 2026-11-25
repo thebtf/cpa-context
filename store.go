@@ -94,6 +94,7 @@ type session struct {
 	ClientType   string    `json:"clientType,omitempty"`
 	AgentName    string    `json:"agentName,omitempty"`
 	IsSubagent   bool      `json:"isSubagent,omitempty"`
+	IsFork       bool      `json:"isFork,omitempty"`
 	FirstSeen    time.Time `json:"firstSeen"`
 	LastSeen     time.Time `json:"lastSeen"`
 	Requests     int       `json:"requests"`
@@ -390,6 +391,7 @@ func (s *store) applyToSessionLocked(snap *snapshot) {
 		sess.AgentName = snap.AgentName
 	}
 	sess.IsSubagent = sess.IsSubagent || snap.IsSubagent
+	sess.IsFork = sess.IsFork || snap.IsFork
 	if snap.Compaction {
 		sess.Compactions++
 	}
@@ -552,6 +554,95 @@ func (s *store) snapshotSessions() []*session {
 		out = append(out, &clone)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].LastSeen.After(out[j].LastSeen) })
+	return out
+}
+
+// agentNode is one member of an agent family: this conversation, its parent,
+// and its children, as CPA identified them from session headers.
+type agentNode struct {
+	ID         string  `json:"id"`
+	Label      string  `json:"label,omitempty"`
+	ClientType string  `json:"clientType,omitempty"`
+	AgentName  string  `json:"agentName,omitempty"`
+	IsSubagent bool    `json:"isSubagent,omitempty"`
+	IsFork     bool    `json:"isFork,omitempty"`
+	Requests   int     `json:"requests"`
+	// Context is the prompt size of this member's newest request.
+	Context int64 `json:"contextTokens"`
+	// Output is what this member has generated in total.
+	Output int64 `json:"outputTokens"`
+	Compactions int `json:"compactions"`
+	// Children are the conversations that named this one as their parent.
+	Children []agentNode `json:"children,omitempty"`
+}
+
+// agentFamily assembles the tree rooted at id, walking children transitively.
+// A conversation whose parent is not in the store is treated as a root, so the
+// view never shows an orphan with a dangling edge.
+func (s *store) agentFamily(id string) *agentNode {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	root, ok := s.sessions[id]
+	if !ok {
+		return nil
+	}
+	seen := map[string]bool{}
+	return s.buildNodeLocked(root, seen)
+}
+
+func (s *store) buildNodeLocked(sess *session, seen map[string]bool) *agentNode {
+	if sess == nil || seen[sess.ID] {
+		return nil
+	}
+	seen[sess.ID] = true
+	node := &agentNode{
+		ID:          sess.ID,
+		Label:       sess.Project,
+		ClientType:  sess.ClientType,
+		AgentName:   sess.AgentName,
+		IsSubagent:  sess.IsSubagent,
+		IsFork:      sess.IsFork,
+		Requests:    sess.Requests,
+		Context:     sess.LastContext,
+		Output:      sess.OutputTokens,
+		Compactions: sess.Compactions,
+	}
+	for _, child := range s.sessions {
+		if child.ParentID != sess.ID || child.ID == sess.ID {
+			continue
+		}
+		if built := s.buildNodeLocked(child, seen); built != nil {
+			node.Children = append(node.Children, *built)
+		}
+	}
+	sort.Slice(node.Children, func(i, j int) bool {
+		return node.Children[i].Context > node.Children[j].Context
+	})
+	return node
+}
+
+// familyRoots returns the top most conversation of every family that has
+// members, so the dashboard can show one entry per family.
+func (s *store) familyRoots() []*agentNode {
+	s.mu.RLock()
+	ids := make([]string, 0, len(s.sessions))
+	for id, sess := range s.sessions {
+		if sess.ParentID == "" {
+			ids = append(ids, id)
+			continue
+		}
+		if _, hasParent := s.sessions[sess.ParentID]; !hasParent {
+			ids = append(ids, id)
+		}
+	}
+	s.mu.RUnlock()
+	sort.Strings(ids)
+	out := make([]*agentNode, 0, len(ids))
+	for _, id := range ids {
+		if node := s.agentFamily(id); node != nil {
+			out = append(out, node)
+		}
+	}
 	return out
 }
 

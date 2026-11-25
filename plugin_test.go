@@ -394,3 +394,73 @@ func TestTrimDoesNotAlsoReportACacheMiss(t *testing.T) {
 		t.Fatalf("a trim must not also be reported as a cache miss: %v", kinds)
 	}
 }
+
+func TestAgentFamilyNestsChildren(t *testing.T) {
+	p := newPlugin(nil)
+	p.cfg.Enabled = true
+	send := func(session, parent string, tokens int) {
+		usageRaw, _ := json.Marshal(map[string]any{
+			"TraceID": session + "-t", "Model": "m",
+			"SessionID": session, "ParentSessionID": parent,
+			"Detail": map[string]any{"InputTokens": tokens, "TotalTokens": tokens},
+		})
+		p.handle("usage.handle", usageRaw)
+	}
+	send("root", "", 1000)
+	send("child-a", "root", 700)
+	send("child-b", "root", 300)
+	send("grandchild", "child-a", 100)
+
+	roots := p.store.familyRoots()
+	if len(roots) != 1 {
+		t.Fatalf("roots = %d, want 1: %v", len(roots), roots)
+	}
+	root := roots[0]
+	if root.ID != "root" {
+		t.Fatalf("root = %q", root.ID)
+	}
+	if len(root.Children) != 2 {
+		t.Fatalf("children = %d, want 2", len(root.Children))
+	}
+	// Children are ordered by context size, largest first.
+	if root.Children[0].ID != "child-a" {
+		t.Fatalf("first child = %q, want child-a", root.Children[0].ID)
+	}
+	if len(root.Children[0].Children) != 1 || root.Children[0].Children[0].ID != "grandchild" {
+		t.Fatalf("grandchild missing: %+v", root.Children[0].Children)
+	}
+}
+
+func TestAgentFamilySurvivesACycle(t *testing.T) {
+	p := newPlugin(nil)
+	p.cfg.Enabled = true
+	send := func(session, parent string) {
+		usageRaw, _ := json.Marshal(map[string]any{
+			"TraceID": session + "-t", "SessionID": session, "ParentSessionID": parent,
+			"Detail": map[string]any{"InputTokens": 10, "TotalTokens": 10},
+		})
+		p.handle("usage.handle", usageRaw)
+	}
+	// Two conversations that each name the other as parent must not recurse.
+	send("a", "b")
+	send("b", "a")
+	if node := p.store.agentFamily("a"); node != nil {
+		if len(node.Children) > 1 {
+			t.Fatalf("cycle produced %d children", len(node.Children))
+		}
+	}
+}
+
+func TestOrphanIsItsOwnRoot(t *testing.T) {
+	p := newPlugin(nil)
+	p.cfg.Enabled = true
+	usageRaw, _ := json.Marshal(map[string]any{
+		"TraceID": "o1", "SessionID": "orphan", "ParentSessionID": "gone",
+		"Detail": map[string]any{"InputTokens": 50, "TotalTokens": 50},
+	})
+	p.handle("usage.handle", usageRaw)
+	roots := p.store.familyRoots()
+	if len(roots) != 1 || roots[0].ID != "orphan" {
+		t.Fatalf("an orphan must appear as its own root, got %+v", roots)
+	}
+}

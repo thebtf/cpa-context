@@ -138,6 +138,18 @@ function title(s) {
   return String(s.id || "").replace(/^header:/, "");
 }
 
+function flatten(node, depth) {
+  const rows = [Object.assign({}, node, { depth: depth })];
+  for (const child of node.children || []) rows.push(...flatten(child, depth + 1));
+  return rows;
+}
+
+function familyRows() {
+  const out = [];
+  for (const root of data.families || []) out.push(...flatten(root, 0));
+  return out;
+}
+
 function renderList() {
   const list = document.getElementById("list");
   if (!data || !data.sessions || data.sessions.length === 0) {
@@ -145,18 +157,28 @@ function renderList() {
       '<span class="note">Send a request through the proxy.</span></div>';
     return;
   }
-  list.innerHTML = data.sessions.map(s => {
-    const total = s.inputTokens || 0;
-    const when = s.lastSeen ? new Date(s.lastSeen).toLocaleTimeString() : "";
-    const model = (s.models && s.models[0]) || "unknown model";
-    return '<div class="card" data-id="' + esc(s.id) + '"' +
-      (s.id === selected ? ' aria-selected="true"' : "") + '>' +
-      '<div class="top"><span class="id">' + esc(title(s)) + "</span>" +
-      '<span class="meta">' + fmt(s.lastContextTokens) + "</span></div>" +
-      '<div class="meta">' + esc(model) + " · " + s.requests + " req · " +
-      esc(when) + "</div>" +
-      (s.unsourced ? '<div class="meta">no session header</div>' : "") +
-      bar(s.composition, s.lastContextTokens) + "</div>";
+  const byId = new Map((data.sessions || []).map(s => [s.id, s]));
+  const members = familyRows();
+  const rows = members.length ? members.map(m => {
+    const s = byId.get(m.id) || {};
+    return { node: m, sess: s };
+  }) : (data.sessions || []).map(s => ({ node: { id: s.id, depth: 0 }, sess: s }));
+
+  list.innerHTML = rows.map(({ node, sess }) => {
+    const when = sess.lastSeen ? new Date(sess.lastSeen).toLocaleTimeString() : "";
+    const model = (sess.models && sess.models[0]) || "unknown model";
+    const child = node.depth > 0;
+    const badge = node.isSubagent || child ? "sub" : node.isFork ? "fork" : "";
+    return '<div class="card" data-id="' + esc(sess.id) + '"' +
+      ' style="padding-left:' + (14 + node.depth * 14) + 'px"' +
+      (sess.id === selected ? ' aria-selected="true"' : "") + '>' +
+      '<div class="top"><span class="id">' +
+      (child ? "&#8627; " : "") + esc(title(sess)) + "</span>" +
+      '<span class="meta">' + fmt(sess.lastContextTokens) + "</span></div>" +
+      '<div class="meta">' + esc(model) + " · " + sess.requests + " req · " + esc(when) +
+      (badge ? " · " + badge : "") + "</div>" +
+      (sess.unsourced ? '<div class="meta">no session header</div>' : "") +
+      bar(sess.composition, sess.lastContextTokens) + "</div>";
   }).join("");
   for (const card of list.querySelectorAll(".card")) {
     card.onclick = () => { selected = card.dataset.id; renderList(); renderDetail(); };
@@ -217,6 +239,21 @@ function renderDetail() {
         "<pre>" + body + "</pre></details>";
     }
     html += "</section>";
+  }
+
+  const family = (data.families || []).map(r => flatten(r, 0)).find(rows => rows.some(r => r.id === s.id));
+  if (family && family.length > 1) {
+    html += '<section><h2>Agent family</h2><table><thead><tr>' +
+      "<th>Member</th><th>Kind</th><th>Context</th><th>Output</th><th>Requests</th>" +
+      "</tr></thead><tbody>";
+    for (const m of family) {
+      const kind = m.isFork ? "fork" : m.isSubagent ? "subagent" : m.depth > 0 ? "child" : "root";
+      html += "<tr><td>" + "&nbsp;".repeat(m.depth * 3) + esc(m.label || m.id) + "</td>" +
+        "<td>" + kind + "</td><td class='n'>" + fmt(m.contextTokens) + "</td>" +
+        "<td class='n'>" + fmt(m.outputTokens) + "</td><td class='n'>" + m.requests +
+        "</td></tr>";
+    }
+    html += "</tbody></table></section>";
   }
 
   if (events.length) {

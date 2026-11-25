@@ -114,6 +114,7 @@ type overview struct {
 	Events     []event           `json:"events"`
 	Totals     totals            `json:"totals"`
 	Categories []string          `json:"categories"`
+	Families   []*agentNode      `json:"families"`
 	Limits     limitsDescription `json:"limits"`
 }
 
@@ -156,6 +157,7 @@ func (p *plugin) overview() overview {
 		Events:     p.store.snapshotEvents("", 300),
 		Totals:     sum,
 		Categories: categoryOrder,
+		Families:   p.store.familyRoots(),
 		Limits: limitsDescription{
 			Scope: "Requests observed by this plugin since the proxy started. CPA exposes no history API to plugins.",
 		},
