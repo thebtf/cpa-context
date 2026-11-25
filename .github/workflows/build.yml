@@ -1,0 +1,172 @@
+name: Build plugin
+
+on:
+  workflow_dispatch:
+  pull_request:
+  push:
+    branches: [main]
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+env:
+  # The plugin is built against, and smoke-tested with, one exact CPA release.
+  # A plugin binary must match the host's schema version, so the release tag and
+  # the archive checksums are pinned here rather than resolved at build time.
+  CPA_VERSION: "8.1.4"
+
+jobs:
+  build:
+    name: Build ${{ matrix.os }}-${{ matrix.arch }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: windows-latest
+            os: windows
+            arch: amd64
+            ext: dll
+            asset: CLIProxyAPI_8.1.4_windows_amd64.zip
+            sha: 665b670d42a5ceeadd33a6f03dffaa362cde920b726ab6b117c4def94ff81b09
+            binary: cli-proxy-api.exe
+          - runner: ubuntu-latest
+            os: linux
+            arch: amd64
+            ext: so
+            asset: CLIProxyAPI_8.1.4_linux_amd64.tar.gz
+            sha: d36d5304eded3884cd0c4168c41a7638a3234631a64a54644069b963ae287cea
+            binary: cli-proxy-api
+          - runner: macos-latest
+            os: darwin
+            arch: arm64
+            ext: dylib
+            asset: CLIProxyAPI_8.1.4_darwin_aarch64.tar.gz
+            sha: 9d9e2350d4af9c2cd1c3636a5892e3b669829284f3a54b252fe1bdfb6b49d93a
+            binary: cli-proxy-api
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Test
+        shell: bash
+        run: go test ./...
+
+      - name: Build library
+        shell: bash
+        env:
+          CGO_ENABLED: "1"
+          EXT: ${{ matrix.ext }}
+        run: |
+          set -euo pipefail
+          go build -buildmode=c-shared -o "cpa-context.$EXT" .
+          ls -la "cpa-context.$EXT"
+
+      - name: Verify against the released CPA binary
+        shell: bash
+        # The smoke test starts a fake upstream, loads the plugin into the real
+        # CPA release, sends one request and checks that the composition the
+        # plugin reports sums to the prompt tokens the upstream billed.
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ASSET: ${{ matrix.asset }}
+          SHA: ${{ matrix.sha }}
+          BINARY: ${{ matrix.binary }}
+          EXT: ${{ matrix.ext }}
+        run: |
+          set -euo pipefail
+          mkdir -p .work/cpa
+          gh release download "v$CPA_VERSION" --repo router-for-me/CLIProxyAPI \
+            --pattern "$ASSET" --dir .work/cpa
+          python3 - "$ASSET" "$SHA" <<'PY'
+          import hashlib, os, pathlib, sys
+          name, want = sys.argv[1], sys.argv[2]
+          path = pathlib.Path(".work/cpa") / name
+          got = hashlib.sha256(path.read_bytes()).hexdigest()
+          if got != want:
+              raise SystemExit(f"checksum mismatch for {name}: {got} != {want}")
+          print("checksum ok:", name)
+          PY
+          case "$ASSET" in
+            *.zip) python3 -m zipfile -e ".work/cpa/$ASSET" .work/cpa ;;
+            *.tar.gz) tar -xzf ".work/cpa/$ASSET" -C .work/cpa ;;
+          esac
+          chmod +x ".work/cpa/$BINARY"
+          node test/smoke.mjs ".work/cpa/$BINARY" "cpa-context.$EXT"
+
+      - name: Package
+        shell: bash
+        env:
+          EXT: ${{ matrix.ext }}
+          OS: ${{ matrix.os }}
+          ARCH: ${{ matrix.arch }}
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          if [[ "$GITHUB_REF_TYPE" != "tag" ]]; then
+            version="0.0.0-dev"
+          fi
+          mkdir -p dist
+          python3 -m zipfile -c \
+            "dist/cpa-context_${version}_${OS}_${ARCH}.zip" "cpa-context.$EXT"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.os }}-${{ matrix.arch }}
+          path: dist/*.zip
+          if-no-files-found: error
+
+  publish:
+    name: Publish release
+    if: github.ref_type == 'tag'
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Checksums
+        working-directory: dist
+        run: |
+          set -euo pipefail
+          sha256sum ./*.zip | sed 's|  \./|  |' > checksums.txt
+          cat checksums.txt
+
+      - name: Create release
+        working-directory: dist
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          sha256sum --check checksums.txt
+          version="${GITHUB_REF_NAME#v}"
+          gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --verify-tag \
+            --title "cpa-context $GITHUB_REF_NAME" \
+            --notes "Context composition dashboard for CLIProxyAPI $CPA_VERSION.
+
+          Copy the archive for your platform into CPA's \`plugins\` directory, keep the
+          file name, and enable the plugin in the CPA configuration:
+
+          \`\`\`yaml
+          plugins:
+            enabled: true
+            configs:
+              cpa-context:
+                enabled: true
+          \`\`\`
+
+          Open \`/v0/resource/plugins/cpa-context/dashboard\` and enter the management key." \
+            ./*.zip checksums.txt

@@ -52,13 +52,17 @@ showing: a calibrated split, or an estimate when the provider sent no counters.
 
 ## Install
 
-Build the shared library for the CPA host's OS and architecture:
+Download the archive for the CPA host's platform from
+[Releases](https://github.com/thebtf/cpa-context/releases) and extract it into
+CPA's plugin directory. Keep the file name: CPA derives the plugin id from it.
+
+To build it yourself, use the CPA host's own OS and architecture:
 
 ```sh
 go build -buildmode=c-shared -o cpa-context.dll .
 ```
 
-Copy it into CPA's plugin directory, then enable it in the CPA configuration:
+Then enable it in the CPA configuration:
 
 ```yaml
 plugins:
@@ -108,5 +112,32 @@ go test ./...
 
 The tests cover the four wire formats, the cache-shape normalization, the scaling
 invariant (categories always sum to the target), the trace-id join between
-interceptor and usage, and the guarantee that the interceptor never modifies a
-request.
+interceptor and usage, the agent family tree including a parent cycle, and the
+guarantee that the interceptor never modifies a request.
+
+### End-to-end check
+
+`test/smoke.mjs` loads the built library into a real CLIProxyAPI binary, starts a
+fake model backend, sends one request, and asserts that the composition the
+plugin reports sums to the prompt tokens the backend billed:
+
+```sh
+go build -buildmode=c-shared -o cpa-context.dll .
+node test/smoke.mjs path/to/cli-proxy-api path/to/cpa-context.dll
+```
+
+It uses synthetic requests and loopback ports only: no provider accounts and no
+installed profile.
+
+### Releases
+
+`.github/workflows/build.yml` builds the plugin for Windows amd64, Linux amd64
+and macOS arm64, checks out the pinned CLIProxyAPI release, verifies its archive
+checksum, and runs the smoke test against that exact binary before packaging.
+Pushing a tag publishes the three archives and a `checksums.txt`. The CPA version
+the plugin is built and verified against is pinned in the workflow, because a
+plugin binary only loads into a compatible host schema.
+
+```sh
+git tag v0.1.0 && git push origin v0.1.0
+```
