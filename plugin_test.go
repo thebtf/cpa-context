@@ -1,6 +1,7 @@
 package main
 
 import (
+	"path/filepath"
 	"encoding/json"
 	"strings"
 	"testing"
@@ -603,4 +604,395 @@ func TestSessionTitleComesFromFirstUserMessage(t *testing.T) {
 	if sess == nil || sess.Title != "Refactor the scheduler loop" {
 		t.Fatalf("title = %q, want the user message", sess.Title)
 	}
+}
+
+// A projection is what the ported dashboard renders, so the invariants it
+// depends on are asserted here: the current window describes the newest
+// request only, every category is filled, and file and command rows appear once
+// per call rather than once per request that replayed them.
+func TestProjectionDescribesNewestRequestOnly(t *testing.T) {
+	p := newPlugin(nil)
+	p.cfg.Enabled = true
+
+	send := func(trace, prompt string, cacheRead int64) {
+		body, _ := json.Marshal(map[string]any{
+			"model": "m",
+			"messages": []map[string]any{
+				{"role": "system", "content": "You are a careful engineer."},
+				{"role": "user", "content": prompt},
+			},
+		})
+		intercept, _ := json.Marshal(map[string]any{
+			"RequestID": trace, "TraceID": trace, "SourceFormat": "openai",
+			"Model": "m", "Body": body,
+		})
+		p.handle("request.intercept_before", intercept)
+		usageRaw, _ := json.Marshal(map[string]any{
+			"TraceID": trace, "Model": "m", "SessionID": "s-proj",
+			"Detail": map[string]any{
+				"InputTokens": 400, "OutputTokens": 20, "TotalTokens": 420,
+				"CacheReadTokens": cacheRead,
+			},
+		})
+		p.handle("usage.handle", usageRaw)
+	}
+
+	send("p1", "first question", 0)
+	send("p2", "second question", 300)
+
+	out := buildProjection("s-proj", p.store.snapshotsFor("s-proj"), p.store.snapshotEvents("s-proj", 50))
+	timeline := out.ContextTimeline
+	if timeline == nil || !timeline.OK {
+		t.Fatal("projection is missing")
+	}
+
+	if timeline.Current.User == 0 {
+		t.Error("current.user is zero: the user message did not reach the window")
+	}
+	if timeline.Current.System == 0 {
+		t.Error("current.system is zero: the instruction prefix did not reach the window")
+	}
+	// The window describes the newest request, not the sum of both.
+	if timeline.Current.Total != 400 {
+		t.Errorf("current.total = %d, want the newest prompt size 400", timeline.Current.Total)
+	}
+	sum := timeline.Current.System + timeline.Current.Tools + timeline.Current.User +
+		timeline.Current.Inject + timeline.Current.Skill + timeline.Current.Assistant + timeline.Current.Tool
+	if sum > timeline.Current.Total {
+		t.Errorf("categories sum to %d, more than the window %d", sum, timeline.Current.Total)
+	}
+	if len(timeline.Requests) != 2 {
+		t.Errorf("requests = %d, want one per model call", len(timeline.Requests))
+	}
+	if timeline.Requests[1].CacheRead != 300 {
+		t.Errorf("newest request cache read = %d, want 300", timeline.Requests[1].CacheRead)
+	}
+	if timeline.Nodes == nil || len(timeline.Nodes) == 0 {
+		t.Fatal("no nodes: the browser has nothing to show")
+	}
+	seen := map[int]bool{}
+	for _, node := range timeline.Nodes {
+		if seen[node.Seq] {
+			t.Errorf("two nodes share seq %d", node.Seq)
+		}
+		seen[node.Seq] = true
+		if node.Cat == "" {
+			t.Errorf("node %d has no category", node.Seq)
+		}
+	}
+	usage, _ := out.TokenUsage["cacheReadTokens"].(int64)
+	if usage != 300 {
+		t.Errorf("tokenUsage.cacheReadTokens = %v, want 300", out.TokenUsage["cacheReadTokens"])
+	}
+}
+
+// Tool calls are replayed by every later request, so accumulating across
+// snapshots would repeat each file operation once per request.
+func TestProjectionCountsEachToolCallOnce(t *testing.T) {
+	p := newPlugin(nil)
+	p.cfg.Enabled = true
+
+	call := map[string]any{
+		"role": "assistant", "content": nil,
+		"tool_calls": []map[string]any{{
+			"id": "call_1", "type": "function",
+			"function": map[string]any{"name": "edit", "arguments": `{"file_path":"a.go","old_string":"x","new_string":"y\nz"}`},
+		}},
+	}
+	result := map[string]any{"role": "tool", "tool_call_id": "call_1", "name": "edit", "content": "ok"}
+	command := map[string]any{
+		"role": "assistant", "content": nil,
+		"tool_calls": []map[string]any{{
+			"id": "call_2", "type": "function",
+			"function": map[string]any{"name": "bash", "arguments": `{"command":"go test ./..."}`},
+		}},
+	}
+	commandResult := map[string]any{"role": "tool", "tool_call_id": "call_2", "name": "bash", "content": "ok"}
+
+	for _, trace := range []string{"t1", "t2", "t3"} {
+		body, _ := json.Marshal(map[string]any{
+			"model": "m",
+			"messages": []map[string]any{
+				{"role": "user", "content": "fix the parser"},
+				call, result, command, commandResult,
+			},
+		})
+		intercept, _ := json.Marshal(map[string]any{
+			"RequestID": trace, "TraceID": trace, "SourceFormat": "openai",
+			"Model": "m", "Body": body,
+		})
+		p.handle("request.intercept_before", intercept)
+		usageRaw, _ := json.Marshal(map[string]any{
+			"TraceID": trace, "Model": "m", "SessionID": "s-tools",
+			"Detail": map[string]any{"InputTokens": 900, "TotalTokens": 900},
+		})
+		p.handle("usage.handle", usageRaw)
+	}
+
+	out := buildProjection("s-tools", p.store.snapshotsFor("s-tools"), nil)
+	timeline := out.ContextTimeline
+
+	if len(timeline.FileOps) != 1 {
+		t.Fatalf("fileOps = %d, want one op for the single edit the prompt replays", len(timeline.FileOps))
+	}
+	op := timeline.FileOps[0]
+	if op.Path != "a.go" {
+		t.Errorf("file op path = %q, want a.go", op.Path)
+	}
+	if op.Kind != "write" {
+		t.Errorf("file op kind = %q, want write", op.Kind)
+	}
+	if op.Added != 2 || op.Removed != 1 {
+		t.Errorf("file op lines = +%d -%d, want +2 -1", op.Added, op.Removed)
+	}
+	if len(timeline.Commands) != 1 {
+		t.Fatalf("commands = %d, want one execution", len(timeline.Commands))
+	}
+	if timeline.Commands[0].Cmd != "go test ./..." {
+		t.Errorf("command = %q", timeline.Commands[0].Cmd)
+	}
+	if timeline.ToolTally["edit"] != 1 || timeline.ToolTally["bash"] != 1 {
+		t.Errorf("tool tally = %v, want one each", timeline.ToolTally)
+	}
+}
+
+// A tool result must be labelled with the tool that produced it, not with the
+// bare id that Claude repeats on the result block.
+func TestToolResultIsLabelledByName(t *testing.T) {
+	body := []byte(`{"model":"m","messages":[
+		{"role":"assistant","content":[{"type":"tool_use","id":"toolu_1","name":"grep","input":{"pattern":"drawChart","path":"cpa-context"}}]},
+		{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_1","content":"dashboard.go:349"}]}
+	]}`)
+	parsed := parseRequestBody("claude", body)
+	if parsed == nil {
+		t.Fatal("body did not parse")
+	}
+	var call, result *item
+	for index := range parsed.Items {
+		switch parsed.Items[index].Category {
+		case CatToolCall:
+			call = &parsed.Items[index]
+		case CatToolResult:
+			result = &parsed.Items[index]
+		}
+	}
+	if call == nil || result == nil {
+		t.Fatal("expected one call and one result")
+	}
+	if call.Tool != "grep" {
+		t.Errorf("call tool = %q, want grep", call.Tool)
+	}
+	if call.Target != "cpa-context · drawChart" {
+		t.Errorf("call target = %q, want the search root and pattern", call.Target)
+	}
+	if result.Label != "grep" {
+		t.Errorf("result label = %q, want the tool name, not its id", result.Label)
+	}
+}
+
+// The ported client fetches its detail through its own routes. Each must answer
+// with the ok envelope it unwraps; an error envelope leaves a card showing
+// "click to retry", which looks like a bug in the dashboard.
+func TestClientRoutesAnswerWithValues(t *testing.T) {
+	p := newPlugin(nil)
+	p.cfg.Enabled = true
+	body, _ := json.Marshal(map[string]any{
+		"model": "m",
+		"messages": []map[string]any{
+			{"role": "user", "content": "fix the chart"},
+			{"role": "assistant", "content": nil, "tool_calls": []map[string]any{{
+				"id": "c1", "type": "function",
+				"function": map[string]any{"name": "read", "arguments": `{"file_path":"dashboard.go"}`},
+			}}},
+			{"role": "tool", "tool_call_id": "c1", "name": "read", "content": "package main"},
+		},
+	})
+	intercept, _ := json.Marshal(map[string]any{
+		"RequestID": "r1", "TraceID": "t1", "SourceFormat": "openai", "Model": "m", "Body": body,
+	})
+	p.handle("request.intercept_before", intercept)
+	usageRaw, _ := json.Marshal(map[string]any{
+		"TraceID": "t1", "Model": "m", "SessionID": "s-routes",
+		"Detail": map[string]any{"InputTokens": 500, "OutputTokens": 10, "TotalTokens": 510},
+	})
+	p.handle("usage.handle", usageRaw)
+
+	const session = `{"sessionId":"s-routes"}`
+	for name, route := range map[string]string{
+		"detail":  routeDetail,
+		"delta":   routeDelta,
+		"recom":   routeRecom,
+		"version": routeVersion,
+	} {
+		payload, ok := p.handleClientRoute(route, "POST", []byte(session))
+		if !ok {
+			t.Fatalf("%s route was not matched", name)
+		}
+		envelope, isMap := payload.(map[string]any)
+		if !isMap || envelope["ok"] != true {
+			t.Fatalf("%s route did not answer ok: %#v", name, payload)
+		}
+		if _, present := envelope["value"]; !present {
+			t.Fatalf("%s route carries no value", name)
+		}
+	}
+
+	facts, ok := p.handleClientRoute(routeFacts, "POST", []byte(`{"sessionId":"s-routes","parts":["head","series","files","commands"]}`))
+	if !ok {
+		t.Fatal("facts route was not matched")
+	}
+	parts, _ := facts.(map[string]any)["value"].(map[string]any)["parts"].(map[string]any)
+	for _, part := range []string{"head", "series", "files", "commands"} {
+		if _, present := parts[part]; !present {
+			t.Errorf("facts route dropped the %q part", part)
+		}
+	}
+
+	history, ok := p.handleClientRoute(routeHistory, "POST", []byte(`{"sessionId":"s-routes","part":"requests"}`))
+	if !ok {
+		t.Fatal("history route was not matched")
+	}
+	page, _ := history.(map[string]any)["value"].(map[string]any)
+	if total, _ := page["total"].(int); total != 1 {
+		t.Errorf("history total = %v, want one request", page["total"])
+	}
+	if page["atStart"] != true {
+		t.Error("history page should report that it starts at the beginning")
+	}
+}
+
+// An unknown session must say so rather than answering an empty ok, which would
+// leave the dashboard rendering a blank conversation.
+func TestClientRoutesReportUnknownSession(t *testing.T) {
+	p := newPlugin(nil)
+	payload, ok := p.handleClientRoute(routeDetail, "POST", []byte(`{"sessionId":"nope"}`))
+	if !ok {
+		t.Fatal("detail route was not matched")
+	}
+	envelope, _ := payload.(map[string]any)
+	if envelope["ok"] != false {
+		t.Fatalf("unknown session answered ok: %#v", payload)
+	}
+}
+
+// The point of the journal is that a restart keeps the picture. This drives a
+// plugin, closes the journal, opens a fresh plugin on the same file, and checks
+// what survived.
+func TestJournalSurvivesRestart(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, stateFileName)
+
+	first := newPlugin(nil)
+	first.cfg.Enabled = true
+	first.cfg.DataDir = dir
+	first.attachJournal(path)
+	if status := first.journalStatus(); status["durable"] != true {
+		t.Fatalf("journal did not open: %#v", status)
+	}
+
+	body, _ := json.Marshal(map[string]any{
+		"model": "m",
+		"messages": []map[string]any{
+			{"role": "system", "content": "Be careful."},
+			{"role": "user", "content": "why is the chart flat"},
+			{"role": "assistant", "content": nil, "tool_calls": []map[string]any{{
+				"id": "c1", "type": "function",
+				"function": map[string]any{"name": "read", "arguments": `{"file_path":"a.go"}`},
+			}}},
+			{"role": "tool", "tool_call_id": "c1", "name": "read", "content": "package main"},
+		},
+	})
+	intercept, _ := json.Marshal(map[string]any{
+		"RequestID": "r1", "TraceID": "t1", "SourceFormat": "openai", "Model": "m", "Body": body,
+	})
+	first.handle("request.intercept_before", intercept)
+	usageRaw, _ := json.Marshal(map[string]any{
+		"TraceID": "t1", "Model": "m", "SessionID": "s-durable",
+		"Detail": map[string]any{
+			"InputTokens": 900, "OutputTokens": 30, "TotalTokens": 930, "CacheReadTokens": 600,
+		},
+	})
+	first.handle("usage.handle", usageRaw)
+	first.shutdown()
+
+	second := newPlugin(nil)
+	second.cfg.Enabled = true
+	second.cfg.DataDir = dir
+	second.attachJournal(path)
+
+	sess := second.store.snapshotSession("s-durable")
+	if sess == nil {
+		t.Fatal("the conversation did not survive the restart")
+	}
+	if sess.Requests != 1 {
+		t.Errorf("requests after restart = %d, want 1", sess.Requests)
+	}
+	if sess.Title != "why is the chart flat" {
+		t.Errorf("title after restart = %q", sess.Title)
+	}
+	if sess.CacheHitRequests != 1 {
+		t.Errorf("cache hit count after restart = %d, want 1", sess.CacheHitRequests)
+	}
+	if sess.InputTokens != 900 {
+		t.Errorf("prompt tokens after restart = %d, want 900", sess.InputTokens)
+	}
+
+	// The projection must rebuild from the replayed snapshot too, otherwise the
+	// cards come back empty even though the totals are right.
+	snaps := second.store.snapshotsFor("s-durable")
+	if len(snaps) != 1 {
+		t.Fatalf("replayed snapshots = %d, want 1", len(snaps))
+	}
+	projection := buildProjection("s-durable", snaps, second.store.snapshotEvents("s-durable", 20))
+	timeline := projection.ContextTimeline
+	if timeline == nil || !timeline.OK {
+		t.Fatal("projection is missing after replay")
+	}
+	if len(timeline.Nodes) == 0 {
+		t.Error("no nodes after replay: the browser would be empty")
+	}
+	if timeline.Current.User == 0 {
+		t.Error("current.user is zero after replay")
+	}
+	if timeline.Current.System == 0 {
+		t.Error("current.system is zero after replay")
+	}
+	second.shutdown()
+}
+
+// Without a data directory the plugin still has to work; it just says that
+// nothing is durable instead of pretending.
+func TestJournalReportsWhenNotConfigured(t *testing.T) {
+	p := newPlugin(nil)
+	status := p.journalStatus()
+	if status["durable"] != false {
+		t.Fatalf("an unconfigured journal claims durability: %#v", status)
+	}
+	if reason, _ := status["reason"].(string); reason == "" {
+		t.Error("a non-durable journal must say why")
+	}
+}
+
+// Resetting drops the stored observations as well, so a reset is a real reset.
+func TestResetClearsTheJournal(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, stateFileName)
+
+	p := newPlugin(nil)
+	p.cfg.Enabled = true
+	p.attachJournal(path)
+	usageRaw, _ := json.Marshal(map[string]any{
+		"TraceID": "t1", "Model": "m", "SessionID": "s-reset",
+		"Detail": map[string]any{"InputTokens": 100, "TotalTokens": 100},
+	})
+	p.handle("usage.handle", usageRaw)
+	p.store.reset()
+	p.shutdown()
+
+	reopened := newPlugin(nil)
+	reopened.attachJournal(path)
+	if sess := reopened.store.snapshotSession("s-reset"); sess != nil {
+		t.Error("a reset session came back after restart")
+	}
+	reopened.shutdown()
 }

@@ -1,0 +1,128 @@
+/* Shell around the ported dashboard: the chrome dsh provides (its own tab bar
+   and side panel) is replaced by this page's own, while everything inside the
+   view keeps the styles it shipped with. */
+:root {
+  color-scheme: dark;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  --lc-gap: 7px;
+  --lc-canvas: transparent;
+  --lc-subpanel-bg: var(--dsw-alias-bg-layer-2);
+  --lc-control-track: var(--dsw-alias-bg-layer-2);
+  --lc-list-stripe: color-mix(in srgb, var(--dsw-alias-interactive-bg-hover) 60%, transparent);
+  --lc-line-fine: 0.5px solid var(--dsw-alias-border-l3);
+  --lc-line-strong: 0.5px solid var(--dsw-alias-border-l4);
+  --lc-line-dashed: 0.5px dashed var(--dsw-alias-border-l3);
+  --lc-shadow-card: var(--dsw-shadow-lv1), var(--dsw-shadow-lv1-blur);
+  --lc-shadow-tile: var(--dsw-shadow-lv1);
+  --lc-shadow-hover: var(--dsw-shadow-lv2);
+  background: var(--dsw-alias-bg-base);
+  color: var(--dsw-alias-label-primary);
+  font: 13px/1.45 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+
+.cpa-port {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+}
+
+.cpa-port-tabs {
+  display: flex;
+  gap: 4px;
+  align-items: center;
+  padding: 8px 12px;
+  border-bottom: 1px solid #22262f;
+  background: #11141b;
+}
+
+.cpa-port-tabs button {
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 5px;
+  color: #8b93a7;
+  padding: 4px 10px;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.cpa-port-tabs button[data-active="true"] {
+  background: #1b2029;
+  border-color: #2a3242;
+  color: #e6e9ef;
+}
+
+.cpa-port-body {
+  display: grid;
+  grid-template-columns: minmax(220px, 300px) 1fr;
+  flex: 1;
+  min-height: 0;
+}
+
+.cpa-port-list {
+  overflow-y: auto;
+  border-right: 1px solid #22262f;
+  min-height: 0;
+}
+
+.cpa-port-row {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  width: 100%;
+  text-align: left;
+  background: transparent;
+  border: 0;
+  border-bottom: 1px solid #191d25;
+  color: inherit;
+  padding: 8px 12px;
+  cursor: pointer;
+}
+
+.cpa-port-row:hover {
+  background: #141922;
+}
+
+.cpa-port-row[data-selected="true"] {
+  background: #1b2130;
+}
+
+.cpa-port-row-title {
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cpa-port-row-meta {
+  color: #8b93a7;
+  font-size: 11px;
+}
+
+.cpa-port-empty {
+  color: #8b93a7;
+  padding: 24px 12px;
+  font-size: 12px;
+}
+
+.cpa-port-view {
+  overflow-y: auto;
+  min-height: 0;
+}
+
+/* The dsh view is written for a full-width container and relies on the host
+   giving .lc-root a block width; without it every flex row shrinks to its
+   content and the cards stack as thin columns. */
+.lc-root {
+  display: block;
+  width: 100%;
+}

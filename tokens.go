@@ -78,7 +78,28 @@ func familyByName(sanitized string) (tokenizer.Model, bool) {
 
 // countItem returns the token estimate for one item. imageBytes is charged by
 // area-proportional approximation because no tokenizer covers encoded images.
+// countItem returns the estimate used on live traffic.
+//
+// It is deliberately the cheap heuristic. A request body is the whole
+// conversation, so the exact BPE pass allocates megabytes per request and costs
+// more than the proxy's own work; measured, it is about 120 times the heuristic.
+// The split is scaled to the provider-reported prompt total afterwards, so the
+// absolute error of the heuristic disappears from the bar: it only shifts tokens
+// between categories, and the bar always sums to the billed number. The exact
+// tokenizer stays available for a single request that is being displayed.
 func (e *estimator) countItem(model string, it item) int {
+	if it.Bytes > 0 && it.Chars == 0 {
+		return imageTokens(it.Bytes)
+	}
+	if it.Chars == 0 {
+		return 0
+	}
+	return charHeuristic(it.Text)
+}
+
+// countItemExact runs the model's own tokenizer. It is used where accuracy
+// matters and the volume does not: rendering one prompt.
+func (e *estimator) countItemExact(model string, it item) int {
 	if it.Bytes > 0 && it.Chars == 0 {
 		return imageTokens(it.Bytes)
 	}

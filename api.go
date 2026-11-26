@@ -14,6 +14,7 @@ import (
 // /v0/resource/plugins/cpa-context/ (browser, unauthenticated).
 const (
 	pathOverview  = "/cpa-context/overview"
+	pathSessions  = "/cpa-context/sessions"
 	pathSession   = "/cpa-context/session"
 	pathEvents    = "/cpa-context/events"
 	pathReset     = "/cpa-context/reset"
@@ -26,9 +27,22 @@ func (p *plugin) registerManagement() pluginapi.ManagementRegistrationResponse {
 	return pluginapi.ManagementRegistrationResponse{
 		Routes: []pluginapi.ManagementRoute{
 			{Method: http.MethodGet, Path: pathOverview, Description: "Context composition per conversation"},
+			{Method: http.MethodGet, Path: pathSessions, Description: "Conversations the dashboard can open"},
 			{Method: http.MethodGet, Path: pathSession, Description: "One conversation with its timeline"},
 			{Method: http.MethodGet, Path: pathEvents, Description: "Context window change events"},
 			{Method: http.MethodPost, Path: pathReset, Description: "Drop collected context data"},
+			// The ported client posts to these for lazy detail; the host only
+			// dispatches a plugin route it was told about, method included.
+			{Method: http.MethodPost, Path: clientDetailPath, Description: "Full detail for one conversation"},
+			{Method: http.MethodPost, Path: clientFactsPath, Description: "Named parts of one conversation"},
+			{Method: http.MethodPost, Path: clientHistoryPath, Description: "A page of one conversation part"},
+			{Method: http.MethodPost, Path: clientDeltaPath, Description: "One step of a conversation"},
+			{Method: http.MethodPost, Path: clientRecomPath, Description: "Sponsor feed placeholder"},
+			{Method: http.MethodPost, Path: clientVersionPath, Description: "Plugin version"},
+			{Method: http.MethodPost, Path: clientFleetPath, Description: "Agent family and its delegations"},
+			{Method: http.MethodPost, Path: clientOverviewPath, Description: "Cross-session overview"},
+			{Method: http.MethodPost, Path: clientBalancePath, Description: "Account balance placeholder"},
+			{Method: http.MethodPost, Path: clientSkillsPath, Description: "Skills observed in traffic"},
 		},
 		Resources: []pluginapi.ResourceRoute{
 			{Path: pathDashboard, Menu: "Context", Description: "Context composition dashboard"},
@@ -64,23 +78,33 @@ func (h managementHandler) HandleManagement(_ context.Context, req pluginapi.Man
 	if strings.HasSuffix(path, pathDashboard) || strings.HasSuffix(req.Path, pathDashboard) {
 		return htmlResponse(dashboardHTML()), nil
 	}
+	// The ported client asks for detail through its own POST routes. The body
+	// arrives as the raw request bytes; the frame carries it base64-encoded, so
+	// json.Unmarshal has already turned it back into text.
+	if body, ok := h.plugin.handleClientRoute(req.Path, req.Method, req.Body); ok {
+		return jsonResponse(body), nil
+	}
 
 	switch {
 	case strings.HasSuffix(path, "/overview"):
 		return jsonResponse(h.plugin.overview()), nil
+	case strings.HasSuffix(path, "/sessions"):
+		return jsonResponse(map[string]any{
+			"sessions": sessionRows(h.plugin.store.snapshotSessions()),
+		}), nil
 	case strings.HasSuffix(path, "/session"):
 		id := ""
 		if req.Query != nil {
 			id = strings.TrimSpace(req.Query.Get("id"))
+			if id == "" {
+				id = strings.TrimSpace(req.Query.Get("session"))
+			}
 		}
-		sess := h.plugin.store.snapshotSession(id)
-		if sess == nil {
+		snaps := h.plugin.store.snapshotsFor(id)
+		if len(snaps) == 0 {
 			return jsonResponse(map[string]any{"error": "session not found", "id": id}), nil
 		}
-		return jsonResponse(map[string]any{
-			"session": sess,
-			"events":  h.plugin.store.snapshotEvents(id, 200),
-		}), nil
+		return jsonResponse(buildProjection(id, snaps, h.plugin.store.snapshotEvents(id, 500))), nil
 	case strings.HasSuffix(path, "/events"):
 		limit := 500
 		sessionID := ""
@@ -116,6 +140,9 @@ type overview struct {
 	Categories []string          `json:"categories"`
 	Families   []*agentNode      `json:"families"`
 	Limits     limitsDescription `json:"limits"`
+	// Journal reports where observations are stored. A dashboard that loses its
+	// history on every restart should say so rather than look reliable.
+	Journal map[string]any `json:"journal"`
 }
 
 type totals struct {
@@ -172,8 +199,9 @@ func (p *plugin) overview() overview {
 		Totals:     sum,
 		Categories: categoryOrder,
 		Families:   p.store.familyRoots(),
+		Journal: p.journalStatus(),
 		Limits: limitsDescription{
-			Scope: "Requests observed by this plugin since the proxy started. CPA exposes no history API to plugins.",
+			Scope: "Requests observed by this plugin. CPA exposes no history API to plugins.",
 		},
 	}
 }

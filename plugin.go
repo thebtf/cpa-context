@@ -1,6 +1,7 @@
 package main
 
 import (
+	"path/filepath"
 	"encoding/json"
 	"net/http"
 	"strings"
@@ -16,7 +17,7 @@ import (
 
 const (
 	pluginID      = "cpa-context"
-	pluginVersion = "0.1.0"
+	pluginVersion = "0.3.0"
 	pluginRepo    = "https://github.com/thebtf/cpa-context"
 )
 
@@ -43,6 +44,10 @@ type config struct {
 	Enabled      bool `yaml:"enabled" json:"enabled"`
 	MaxSessions  int  `yaml:"max_sessions" json:"max_sessions"`
 	RecordBodies bool `yaml:"record_bodies" json:"record_bodies"`
+	// DataDir is where the SQLite journal lives. The host does not tell a plugin
+	// its own path, so this is configured: in a container it is the mounted
+	// plugins directory, which is the only one that survives a restart.
+	DataDir string `yaml:"data_dir" json:"data_dir"`
 }
 
 func defaultConfig() config {
@@ -60,14 +65,66 @@ type plugin struct {
 var timeNow = time.Now
 
 func newPlugin(call hostCall) *plugin {
-	return &plugin{
+	p := &plugin{
 		cfg:   defaultConfig(),
 		store: newStore(defaultLimits()),
 		call:  call,
 	}
+	return p
+}
+
+// attachJournal opens the persistent store and replays it. Replaying happens
+// once, at startup: the dashboard then reads memory, and every new observation
+// is written through.
+func (p *plugin) attachJournal(path string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.store.journal != nil {
+		return
+	}
+	opened := openJournal(path)
+	p.store.journal = opened
+	snaps, events := opened.replay()
+	if len(snaps) == 0 && len(events) == 0 {
+		return
+	}
+	p.store.mu.Lock()
+	defer p.store.mu.Unlock()
+	for _, snap := range snaps {
+		p.store.applyToSessionLocked(snap)
+		p.store.recent = append(p.store.recent, snap)
+	}
+	p.store.events = append(p.store.events, events...)
+	if len(p.store.recent) > p.store.limits.maxRecent {
+		p.store.recent = p.store.recent[len(p.store.recent)-p.store.limits.maxRecent:]
+	}
+	if len(p.store.events) > p.store.limits.maxEvents {
+		p.store.events = p.store.events[len(p.store.events)-p.store.limits.maxEvents:]
+	}
+}
+
+// journalStatus reports where observations are stored, for the dashboard to
+// show instead of pretending the history is permanent.
+func (p *plugin) journalStatus() map[string]any {
+	p.mu.RLock()
+	opened := p.store.journal
+	p.mu.RUnlock()
+	if opened == nil {
+		return map[string]any{"durable": false, "reason": "the journal was not opened"}
+	}
+	if opened.broken != "" {
+		return map[string]any{"durable": false, "reason": opened.broken}
+	}
+	return map[string]any{"durable": true, "path": opened.path}
 }
 
 func (p *plugin) shutdown() {
+	p.mu.Lock()
+	opened := p.store.journal
+	p.mu.Unlock()
+	// Closing flushes the write-ahead log; the observations stay on disk so the
+	// next start reads them back.
+	opened.close()
 	p.store.reset()
 }
 
@@ -127,6 +184,9 @@ func (p *plugin) configure(raw []byte) *rpcError {
 	limits.keepItemsForNewest = next.RecordBodies
 	p.store.setLimits(limits)
 	p.mu.Unlock()
+	if next.DataDir != "" {
+		p.attachJournal(filepath.Join(next.DataDir, stateFileName))
+	}
 	return nil
 }
 

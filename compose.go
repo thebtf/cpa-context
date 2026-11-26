@@ -37,6 +37,19 @@ type item struct {
 	Text     string `json:"text,omitempty"`
 	// Bytes covers payloads whose size is not text length: images, opaque JSON.
 	Bytes int `json:"bytes,omitempty"`
+	// Tool is the tool's own name for a call or a result. Claude puts the name on
+	// the call and only an id on the result, so results resolve it by that id.
+	Tool string `json:"tool,omitempty"`
+	// Target is what the call acted on: a file path, a command, a search
+	// pattern. It is read from the arguments, which the prompt replays.
+	Target string `json:"target,omitempty"`
+	// Err reports that a tool result carries an error.
+	Err bool `json:"err,omitempty"`
+	// Added and Removed count the lines a write added and removed.
+	Added   int `json:"added,omitempty"`
+	Removed int `json:"removed,omitempty"`
+	// Hits is how many matches a search found.
+	Hits int `json:"hits,omitempty"`
 }
 
 // composition is the parsed shape of one request body.
@@ -262,10 +275,22 @@ func parseClaude(body []byte) *composition {
 		c.SystemText += block.text
 	}
 
+	// Claude names a tool on its call and only repeats an id on the result, so
+	// the names are collected first and results are labelled by the call they
+	// answer. Without this pass a tool result is labelled with a bare id, which
+	// is what made tool rows unreadable.
+	names := map[string]string{}
+	for _, message := range payload.Messages {
+		for _, block := range decodeClaudeBlocks(message.Content) {
+			if block.kind == "tool_use" && block.toolUseID != "" {
+				names[block.toolUseID] = block.toolName
+			}
+		}
+	}
 	for _, message := range payload.Messages {
 		role := message.Role
 		for _, block := range decodeClaudeBlocks(message.Content) {
-			c.add(claudeBlockItem(role, block))
+			c.add(claudeBlockItem(role, block, names))
 			if role == "user" && block.kind == "text" {
 				c.setTitle(block.text)
 			}
@@ -282,11 +307,25 @@ func parseClaude(body []byte) *composition {
 	return c
 }
 
+// toolCallItem builds the item for one tool call: the name the model chose, the
+// arguments the prompt replays, and the target those arguments name.
+func toolCallItem(name, args, text, role string) item {
+	call := item{Category: CatToolCall, Role: role, Label: name, Tool: name, Text: text, Chars: len(text)}
+	target, added, removed := toolTarget(name, args)
+	call.Target = target
+	call.Added = added
+	call.Removed = removed
+	return call
+}
+
 type claudeBlock struct {
-	kind     string
-	text     string
-	toolName string
-	bytes    int
+	kind      string
+	text      string
+	toolName  string
+	toolUseID string
+	args      string
+	isError   bool
+	bytes     int
 }
 
 func decodeClaudeBlocks(raw json.RawMessage) []claudeBlock {
@@ -305,6 +344,8 @@ func decodeClaudeBlocks(raw json.RawMessage) []claudeBlock {
 		Input     json.RawMessage `json:"input"`
 		Content   json.RawMessage `json:"content"`
 		ToolUseID string          `json:"tool_use_id"`
+		ID        string          `json:"id"`
+		IsError   bool            `json:"is_error"`
 		Source    *struct {
 			Data      string `json:"data"`
 			MediaType string `json:"media_type"`
@@ -321,9 +362,21 @@ func decodeClaudeBlocks(raw json.RawMessage) []claudeBlock {
 		case "thinking", "redacted_thinking":
 			out = append(out, claudeBlock{kind: "thinking", text: block.Thinking})
 		case "tool_use":
-			out = append(out, claudeBlock{kind: "tool_use", text: compactJSON(block.Input), toolName: block.Name})
+			out = append(out, claudeBlock{
+				kind:      "tool_use",
+				text:      compactJSON(block.Input),
+				args:      compactJSON(block.Input),
+				toolName:  block.Name,
+				toolUseID: block.ID,
+			})
 		case "tool_result":
-			out = append(out, claudeBlock{kind: "tool_result", text: compactJSON(block.Content), toolName: block.ToolUseID, bytes: len(block.Content)})
+			out = append(out, claudeBlock{
+				kind:      "tool_result",
+				text:      compactJSON(block.Content),
+				toolUseID: block.ToolUseID,
+				isError:   block.IsError,
+				bytes:     len(block.Content),
+			})
 		case "image":
 			size := len(block.Source.Data)
 			if size == 0 {
@@ -337,14 +390,23 @@ func decodeClaudeBlocks(raw json.RawMessage) []claudeBlock {
 	return out
 }
 
-func claudeBlockItem(role string, block claudeBlock) item {
+func claudeBlockItem(role string, block claudeBlock, names map[string]string) item {
 	switch block.kind {
 	case "thinking":
 		return item{Category: CatThinking, Role: role, Label: "thinking", Text: block.text, Chars: len(block.text)}
 	case "tool_use":
-		return item{Category: CatToolCall, Role: role, Label: block.toolName, Text: block.text, Chars: len(block.text)}
+		call := toolCallItem(block.toolName, block.args, block.text, role)
+		return call
 	case "tool_result":
-		return item{Category: CatToolResult, Role: role, Label: block.toolName, Text: block.text, Chars: len(block.text), Bytes: block.bytes}
+		name := names[block.toolUseID]
+		if name == "" {
+			name = "tool result"
+		}
+		return item{
+			Category: CatToolResult, Role: role, Label: name, Tool: name,
+			Text: block.text, Chars: len(block.text), Bytes: block.bytes,
+			Err: block.isError,
+		}
 	case "image":
 		return item{Category: CatImage, Role: role, Label: "image", Bytes: block.bytes}
 	}
@@ -365,6 +427,7 @@ func parseOpenAIChat(body []byte) *composition {
 			Name       string          `json:"name"`
 			ToolCallID string          `json:"tool_call_id"`
 			ToolCalls  []struct {
+				ID       string `json:"id"`
 				Function struct {
 					Name      string `json:"name"`
 					Arguments string `json:"arguments"`
@@ -383,6 +446,7 @@ func parseOpenAIChat(body []byte) *composition {
 		return nil
 	}
 	c := newComposition("openai")
+	callNames := map[string]string{}
 	c.Model = payload.Model
 	c.Stream = payload.Stream
 	c.MaxTokens = payload.MaxTokens
@@ -397,14 +461,15 @@ func parseOpenAIChat(body []byte) *composition {
 	for _, message := range payload.Messages {
 		role := message.Role
 		for _, part := range decodeOpenAIContent(message.Content) {
-			c.add(openAIPartItem(role, message.Name, message.ToolCallID, part))
+			c.add(openAIPartItem(role, message.Name, message.ToolCallID, part, callNames))
 			if role == "user" && part.kind == "text" {
 				c.setTitle(part.text)
 			}
 		}
 		for _, call := range message.ToolCalls {
 			text := call.Function.Name + "(" + call.Function.Arguments + ")"
-			c.add(item{Category: CatToolCall, Role: role, Label: call.Function.Name, Text: text, Chars: len(text)})
+			c.add(toolCallItem(call.Function.Name, call.Function.Arguments, text, role))
+			callNames[call.ID] = call.Function.Name
 		}
 		c.MessageCount++
 	}
@@ -469,7 +534,7 @@ func decodeOpenAIContent(raw json.RawMessage) []openAIPart {
 	return out
 }
 
-func openAIPartItem(role, name, toolCallID string, part openAIPart) item {
+func openAIPartItem(role, name, toolCallID string, part openAIPart, callNames map[string]string) item {
 	if part.kind == "image" {
 		return item{Category: CatImage, Role: role, Label: "image", Bytes: len(part.imageURL)}
 	}
@@ -477,7 +542,11 @@ func openAIPartItem(role, name, toolCallID string, part openAIPart) item {
 	case "system", "developer":
 		return item{Category: CatSystem, Role: role, Label: role + " message", Text: part.text, Chars: len(part.text)}
 	case "tool":
-		return item{Category: CatToolResult, Role: role, Label: firstNonEmpty(name, toolCallID, "tool result"), Text: part.text, Chars: len(part.text)}
+		// A tool message carries the id of the call it answers, and only some
+		// providers also repeat the tool's name, so the earlier call is the
+		// authority on what to label this row.
+		label := firstNonEmpty(name, callNames[toolCallID], "tool result")
+		return item{Category: CatToolResult, Role: role, Label: label, Tool: label, Text: part.text, Chars: len(part.text)}
 	case "assistant":
 		return item{Category: CatAssistant, Role: role, Label: "assistant reply", Text: part.text, Chars: len(part.text)}
 	case "user":
@@ -504,6 +573,7 @@ func parseOpenAIResponses(body []byte) *composition {
 		return nil
 	}
 	c := newComposition("openai-response")
+	callNames := map[string]string{}
 	c.Model = payload.Model
 	c.Stream = payload.Stream
 	c.MaxTokens = payload.MaxOutput
@@ -532,15 +602,24 @@ func parseOpenAIResponses(body []byte) *composition {
 		}
 		switch typed.Type {
 		case "function_call":
-			text := typed.Name + "(" + firstNonEmpty(typed.Args, typed.Input) + ")"
-			c.add(item{Category: CatToolCall, Label: typed.Name, Text: text, Chars: len(text)})
+			args := firstNonEmpty(typed.Args, typed.Input)
+			text := typed.Name + "(" + args + ")"
+			c.add(toolCallItem(typed.Name, args, text, ""))
+			callNames[typed.CallID] = typed.Name
 		case "function_call_output":
 			output := compactJSON(typed.Output)
-			c.add(item{Category: CatToolResult, Label: firstNonEmpty(typed.CallID, "tool result"), Text: output, Chars: len(output)})
+			name := callNames[typed.CallID]
+			if name == "" {
+				name = "tool result"
+			}
+			c.add(item{
+				Category: CatToolResult, Label: name, Tool: name,
+				Text: output, Chars: len(output),
+			})
 		case "", "message":
 			role := typed.Role
 			for _, part := range decodeOpenAIContent(typed.Content) {
-				c.add(openAIPartItem(role, typed.Name, typed.CallID, part))
+				c.add(openAIPartItem(role, typed.Name, typed.CallID, part, callNames))
 				if role == "user" && part.kind == "text" {
 					c.setTitle(part.text)
 				}
@@ -629,7 +708,7 @@ func parseGemini(body []byte) *composition {
 			case part.InlineData != nil:
 				c.add(item{Category: CatImage, Role: role, Label: "inlineData", Bytes: len(part.InlineData.Data)})
 			default:
-				c.add(openAIPartItem(role, "", "", openAIPart{kind: "text", text: part.Text}))
+				c.add(openAIPartItem(role, "", "", openAIPart{kind: "text", text: part.Text}, nil))
 				if role == "user" {
 					c.setTitle(part.Text)
 				}

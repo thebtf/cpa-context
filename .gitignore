@@ -5,3 +5,15 @@ cpa-context.dylib
 cpa-context.exe
 dist/
 .work/
+
+# The ported dashboard client: sources are tracked, its build output and
+# installed packages are not. The build output is embedded by the Go build, so
+# it is produced by `npm run build` before compiling the plugin.
+web/node_modules/
+web/dist/
+web/shots/
+
+# Local runtime data.
+context.db
+context.db-wal
+context.db-shm

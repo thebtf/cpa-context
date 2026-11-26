@@ -114,6 +114,9 @@ type session struct {
 	// operator whether a client is reusing its prefix.
 	CacheHitRequests  int `json:"cacheHitRequests"`
 	CacheMissRequests int `json:"cacheMissRequests"`
+	// ToolCalls counts the tool invocations the newest prompt replays, which is
+	// the same number the context view shows for this conversation.
+	ToolCalls int `json:"toolCalls,omitempty"`
 	// Title is the conversation's own first user message, trimmed. CPA exposes no
 	// session title, so this is the closest thing to a name the traffic carries.
 	Title string `json:"title,omitempty"`
@@ -169,6 +172,20 @@ type store struct {
 	// pending maps trace id to the snapshot awaiting its usage record.
 	pending map[string]*snapshot
 	limits  limits
+	// journal is the persistent store. It may be nil, in which case the plugin
+	// works from memory only and says so.
+	journal *journal
+	// projections caches the rendered projection per session. The client asks
+	// for it through several routes per page load, and each build walks every
+	// stored request, so rebuilding per call is wasted work. A session's version
+	// is its request count, which only grows.
+	projections   map[string]*cachedProjection
+	projectionCap int
+}
+
+type cachedProjection struct {
+	version int
+	value   projection
 }
 
 type limits struct {
@@ -178,6 +195,10 @@ type limits struct {
 	maxEvents          int
 	maxPendingAge      time.Duration
 	keepItemsForNewest bool
+	// maxItemBytes caps the prompt text held across all snapshots. Rendering
+	// needs one session's newest prompt; holding many is what makes the process
+	// huge, and a huge heap costs CPU in the collector.
+	maxItemBytes int
 }
 
 func defaultLimits() limits {
@@ -188,14 +209,17 @@ func defaultLimits() limits {
 		maxEvents:          2000,
 		maxPendingAge:      10 * time.Minute,
 		keepItemsForNewest: true,
+		maxItemBytes:       16 << 20,
 	}
 }
 
 func newStore(limits limits) *store {
 	return &store{
-		sessions: make(map[string]*session),
-		pending:  make(map[string]*snapshot),
-		limits:   limits,
+		sessions:      make(map[string]*session),
+		pending:       make(map[string]*snapshot),
+		projections:   make(map[string]*cachedProjection),
+		projectionCap: 64,
+		limits:        limits,
 	}
 }
 
@@ -248,6 +272,7 @@ func (s *store) recordCompletion(traceID, requestID, outcome, message string) bo
 	delete(s.pending, traceID)
 	s.applyToSessionLocked(snap)
 	s.rememberLocked(snap)
+	s.journal.appendRequest(snap)
 	return true
 }
 
@@ -354,6 +379,7 @@ func (s *store) recordUsage(u usage) {
 
 	s.applyToSessionLocked(snap)
 	s.rememberLocked(snap)
+	s.journal.appendRequest(snap)
 }
 
 // applyToSessionLocked folds one finished snapshot into its session aggregate.
@@ -464,6 +490,13 @@ func (s *store) applyToSessionLocked(snap *snapshot) {
 		if s.limits.keepItemsForNewest {
 			sess.LastItems = snap.Items
 		}
+		calls := 0
+		for _, it := range snap.Items {
+			if it.Category == CatToolCall {
+				calls++
+			}
+		}
+		sess.ToolCalls = calls
 		sess.MaxOutput = int64(snap.MaxTokens)
 	}
 
@@ -531,17 +564,80 @@ func (s *store) recordEventsLocked(sess *session, snap *snapshot) {
 }
 
 func (s *store) pushEventLocked(ev event) {
+	s.journal.appendEvent(ev)
 	s.events = append(s.events, ev)
 	if len(s.events) > s.limits.maxEvents {
 		s.events = s.events[len(s.events)-s.limits.maxEvents:]
 	}
 }
 
+// rememberLocked keeps a finished snapshot and bounds what the process holds.
+//
+// A request body carries the whole conversation, so a snapshot's Items duplicate
+// every earlier request's text. Only the newest snapshot of a session is ever
+// rendered, so the older ones drop their text and keep their counters. That is
+// what keeps a long-running proxy from spending all its CPU in the collector.
 func (s *store) rememberLocked(snap *snapshot) {
 	s.recent = append(s.recent, snap)
 	if len(s.recent) > s.limits.maxRecent {
 		s.recent = s.recent[len(s.recent)-s.limits.maxRecent:]
 	}
+	s.dropSupersededItemsLocked(snap)
+	s.enforceItemBudgetLocked()
+}
+
+// enforceItemBudgetLocked drops prompt text, oldest first, until the held bytes
+// fit the budget. Counters, composition and timeline are untouched, so only the
+// expandable prompt text is lost, and the dashboard already says when a prompt
+// is no longer available.
+func (s *store) enforceItemBudgetLocked() {
+	held := s.itemBudgetLocked()
+	if held <= s.limits.maxItemBytes {
+		return
+	}
+	for i := 0; i < len(s.recent) && held > s.limits.maxItemBytes; i++ {
+		snap := s.recent[i]
+		if len(snap.Items) == 0 {
+			continue
+		}
+		for _, it := range snap.Items {
+			held -= len(it.Text) + len(it.Label) + len(it.Target) + len(it.Detail)
+		}
+		snap.Items = nil
+	}
+}
+
+// dropSupersededItemsLocked clears the prompt text of every snapshot of this
+// session except the one just stored. The composition survives, so the timeline
+// and the totals stay exact; only the expandable text goes.
+func (s *store) dropSupersededItemsLocked(newest *snapshot) {
+	if newest.SessionID == "" {
+		return
+	}
+	for i := len(s.recent) - 2; i >= 0; i-- {
+		earlier := s.recent[i]
+		if earlier == newest {
+			continue
+		}
+		if earlier.SessionID != newest.SessionID {
+			continue
+		}
+		if len(earlier.Items) > 0 {
+			earlier.Items = nil
+		}
+	}
+}
+
+// itemBudget bounds the total prompt text held in memory across all sessions.
+// Without it, many sessions each keeping their newest prompt would still add up.
+func (s *store) itemBudgetLocked() int {
+	held := 0
+	for _, snap := range s.recent {
+		for _, it := range snap.Items {
+			held += len(it.Text) + len(it.Label) + len(it.Target) + len(it.Detail)
+		}
+	}
+	return held
 }
 
 func (s *store) prunePendingLocked() {
@@ -575,6 +671,61 @@ func (s *store) evictSessionsLocked() {
 	for i := range remove {
 		delete(s.sessions, entries[i].id)
 	}
+}
+
+// projectionFor returns the rendered projection of one conversation, reusing
+// the previous render while the conversation has not gained a request.
+func (s *store) projectionFor(sessionID string) (projection, bool) {
+	s.mu.RLock()
+	snaps := make([]*snapshot, 0, 64)
+	for _, snap := range s.recent {
+		if snap.SessionID == sessionID {
+			snaps = append(snaps, snap)
+		}
+	}
+	events := make([]event, 0, 32)
+	for i := len(s.events) - 1; i >= 0 && len(events) < 500; i-- {
+		if s.events[i].SessionID == sessionID {
+			events = append(events, s.events[i])
+		}
+	}
+	cached, ok := s.projections[sessionID]
+	s.mu.RUnlock()
+	if len(snaps) == 0 {
+		return projection{}, false
+	}
+	if ok && cached.version == len(snaps) {
+		return cached.value, true
+	}
+	for i, j := 0, len(events)-1; i < j; i, j = i+1, j-1 {
+		events[i], events[j] = events[j], events[i]
+	}
+	value := buildProjection(sessionID, snaps, events)
+	s.mu.Lock()
+	if len(s.projections) >= s.projectionCap {
+		for key := range s.projections {
+			delete(s.projections, key)
+			break
+		}
+	}
+	s.projections[sessionID] = &cachedProjection{version: len(snaps), value: value}
+	s.mu.Unlock()
+	return value, true
+}
+
+// snapshotsFor returns the finished snapshots of one conversation, oldest
+// first. The dashboard renders one projection per conversation, and a
+// projection needs the parsed prompt of every request, not only the newest.
+func (s *store) snapshotsFor(sessionID string) []*snapshot {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := make([]*snapshot, 0, 64)
+	for _, snap := range s.recent {
+		if snap.SessionID == sessionID {
+			out = append(out, snap)
+		}
+	}
+	return out
 }
 
 func (s *store) snapshotSessions() []*session {
@@ -736,6 +887,10 @@ func (s *store) setLimits(next limits) {
 func (s *store) reset() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.journal != nil {
+		s.journal.reset()
+	}
+	s.projections = make(map[string]*cachedProjection)
 	s.sessions = make(map[string]*session)
 	s.pending = make(map[string]*snapshot)
 	s.recent = nil

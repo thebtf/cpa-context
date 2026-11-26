@@ -1,0 +1,49 @@
+/* The ported client was written against dsh's design system and reads its
+   colours, borders and radii from --dsw-* custom properties. CPA has no such
+   system, so the tokens it asks for are defined here once, in one dark theme.
+   Every name in src/client/styles is covered: a missing token would silently
+   collapse a card's border or turn its text invisible. */
+:root {
+  --dsw-alias-bg-base: #0d1017;
+  --dsw-alias-bg-layer-1: #141922;
+  --dsw-alias-bg-layer-2: #1a202b;
+  --dsw-alias-bg-layer-3: #212936;
+  --dsw-alias-bg-module-platform: #11141b;
+  --dsw-alias-bg-mask-1: rgba(4, 6, 10, 0.72);
+
+  --dsw-alias-label-primary: #e6e9ef;
+  --dsw-alias-label-primary-foreground: #0d1017;
+  --dsw-alias-label-secondary: #8b93a7;
+  --dsw-alias-label-tertiary: #6d7589;
+  --dsw-alias-label-dimmed: #565e70;
+
+  --dsw-alias-border-l1: #1b202a;
+  --dsw-alias-border-l2: #242b37;
+  --dsw-alias-border-l3: #2e3644;
+  --dsw-alias-border-l4: #3a4455;
+
+  --dsw-alias-interactive-bg-hover: #222a37;
+  --dsw-alias-interactive-bg-active: #2b3444;
+
+  --dsw-alias-brand-primary: #4b9ad6;
+  --dsw-alias-state-success-primary: #4bd69a;
+  --dsw-alias-state-error-primary: #d6607c;
+  --dsw-alias-state-warn-primary: #d6a94b;
+  --dsw-alias-state-business-primary: #8a7cf0;
+
+  --dsw-alias-button-primary-fill: #4b9ad6;
+  --dsw-alias-button-info-fill: #3b7ea8;
+
+  --dsw-static-neutral-bluish-75: #10131a;
+  --dsw-static-neutral-1000: #ffffff;
+
+  --dsw-shadow-lv1: 0 1px 2px rgba(0, 0, 0, 0.35);
+  --dsw-shadow-lv1-blur: 0 1px 6px rgba(0, 0, 0, 0.25);
+  --dsw-shadow-lv2: 0 4px 14px rgba(0, 0, 0, 0.35);
+  --dsw-shadow-lv3: 0 10px 28px rgba(0, 0, 0, 0.45);
+
+  --dsw-focus-ring-width: 1px;
+  --dsw-focus-ring-color: #4b9ad6;
+  --dsw-radius-md: 8px;
+  --dsw-font-family-mono: ui-monospace, "Cascadia Mono", "SF Mono", Menlo, monospace;
+}
