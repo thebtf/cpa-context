@@ -87,6 +87,7 @@ func (p *plugin) attachJournal(path string) {
 	// Drop what is past retention before loading, so an old file does not fill
 	// memory on the way in.
 	opened.pruneOld(timeNow())
+	opened.pruneEvery(10*time.Minute, opened.stop)
 	snaps, events := opened.replay()
 	if len(snaps) == 0 && len(events) == 0 {
 		return

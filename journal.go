@@ -29,6 +29,8 @@ type journal struct {
 	mu   sync.Mutex
 	db   *sql.DB
 	path string
+	// stop ends the pruning ticker when the plugin shuts down.
+	stop chan struct{}
 	// broken records that the file could not be opened. The plugin keeps
 	// working in memory and reports it, rather than refusing to start.
 	broken string
@@ -120,7 +122,7 @@ func (j journalSnapshot) toSnapshot() *snapshot {
 }
 
 func openJournal(path string) *journal {
-	j := &journal{path: path}
+	j := &journal{path: path, stop: make(chan struct{})}
 	if path == "" {
 		j.broken = "no data directory is writable"
 		return j
@@ -211,6 +213,11 @@ func (j *journal) appendEvent(ev event) {
 // replay loads the whole file into memory.
 const journalRetention = 30 * 24 * time.Hour
 
+// journalRows is the row ceiling, matching what memory keeps. Retention alone
+// lets a busy proxy write far more rows than a replay would ever hold, so the
+// file is also trimmed by count.
+const journalRows = 2000
+
 // pruneLocked drops observations older than the retention window and returns
 // how many were removed. It runs at startup and on a slow ticker, so a proxy
 // that stays up for months does not grow a file it then has to read back.
@@ -228,6 +235,15 @@ func (j *journal) pruneOld(now time.Time) int {
 		}
 	}
 	if result, err := j.db.Exec(`DELETE FROM events WHERE at < ?`, cutoff); err == nil {
+		if n, errRows := result.RowsAffected(); errRows == nil {
+			removed += int(n)
+		}
+	}
+	// Then trim by count: whatever is past the ceiling goes, oldest first. Without
+	// this a proxy that sees steady traffic grows the file for thirty days while
+	// memory holds only the newest rows.
+	if result, err := j.db.Exec(`DELETE FROM requests WHERE seq NOT IN
+		(SELECT seq FROM requests ORDER BY seq DESC LIMIT ?)`, journalRows); err == nil {
 		if n, errRows := result.RowsAffected(); errRows == nil {
 			removed += int(n)
 		}
@@ -298,9 +314,34 @@ func (j *journal) reset() {
 	_, _ = j.db.Exec(`DELETE FROM events`)
 }
 
+// pruneEvery bounds the file while the proxy stays up. Startup alone is not
+// enough: a process that runs for a week would write for a week before trimming.
+func (j *journal) pruneEvery(interval time.Duration, stop <-chan struct{}) {
+	if j == nil || j.db == nil {
+		return
+	}
+	go func() {
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-stop:
+				return
+			case now := <-ticker.C:
+				j.pruneOld(now)
+			}
+		}
+	}()
+}
+
 func (j *journal) close() {
 	if j == nil || j.db == nil {
 		return
+	}
+	select {
+	case <-j.stop:
+	default:
+		close(j.stop)
 	}
 	j.mu.Lock()
 	defer j.mu.Unlock()
