@@ -881,6 +881,9 @@ type agentNode struct {
 	Compactions int   `json:"compactions"`
 	// Children are the conversations that named this one as their parent.
 	Children []agentNode `json:"children,omitempty"`
+	// ParentID is the conversation this one named as its parent, empty for a
+	// root. The fleet view needs it to tell a lead from a teammate.
+	ParentID string `json:"parentId,omitempty"`
 }
 
 // agentFamily assembles the tree rooted at id, walking children transitively.
@@ -913,6 +916,7 @@ func (s *store) buildNodeLocked(sess *session, seen map[string]bool) *agentNode 
 		Context:     sess.LastContext,
 		Output:      sess.OutputTokens,
 		Compactions: sess.Compactions,
+		ParentID:    sess.ParentID,
 	}
 	for _, child := range s.sessions {
 		if child.ParentID != sess.ID || child.ID == sess.ID {

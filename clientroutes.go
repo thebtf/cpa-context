@@ -122,54 +122,6 @@ func (p *plugin) factsBody(raw []byte) any {
 	})
 }
 
-// historyBody serves a page of one part. The plugin keeps every request of a
-// session in memory, so a page is a slice of the head projection.
-func (p *plugin) historyBody(raw []byte) any {
-	var request struct {
-		SessionID string `json:"sessionId"`
-		Part      string `json:"part"`
-		Limit     int    `json:"limit"`
-	}
-	if err := json.Unmarshal(raw, &request); err != nil {
-		return clientError("invalid request")
-	}
-	built, ok := p.store.projectionFor(request.SessionID)
-	if !ok {
-		return clientError("session not found")
-	}
-	timeline := built.ContextTimeline
-
-	var rows []any
-	switch request.Part {
-	case "requests":
-		rows = anySlice(seriesWithChart(timeline.Requests))
-	case "events":
-		rows = anySlice(timeline.Events)
-	case "nodes":
-		rows = anySlice(timeline.Nodes)
-	case "files":
-		rows = anySlice(timeline.FileOps)
-	case "commands":
-		rows = anySlice(timeline.Commands)
-	default:
-		rows = []any{}
-	}
-	limit := request.Limit
-	if limit <= 0 || limit > len(rows) {
-		limit = len(rows)
-	}
-	return clientEnvelope(map[string]any{
-		"rev":     timeline.DetailRev,
-		"part":    request.Part,
-		"rows":    rows[len(rows)-limit:],
-		"first":   len(rows) - limit,
-		"last":    len(rows) - 1,
-		"total":   len(rows),
-		"atStart": limit == len(rows),
-		"atEnd":   true,
-	})
-}
-
 // deltaBody answers a step comparison. The head projection describes the newest
 // prompt only, so a step's own nodes are not available on demand: answering with
 // the head and an empty diff keeps the browser consistent, while a fabricated
@@ -225,7 +177,7 @@ func (p *plugin) handleClientRoute(path string, method string, raw []byte) (any,
 	case strings.HasSuffix(path, routeFacts):
 		return p.factsBody(raw), true
 	case strings.HasSuffix(path, routeHistory):
-		return p.historyBody(raw), true
+		return p.historyPage(raw), true
 	case strings.HasSuffix(path, routeDelta):
 		return p.deltaBody(raw), true
 	case strings.HasSuffix(path, routeRecom):

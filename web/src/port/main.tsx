@@ -1,6 +1,7 @@
 import { createElement } from 'react'
 import { createRoot } from 'react-dom/client'
 import { App } from './App'
+import { installHistoryFace } from './historyFace'
 import { makePortStore } from '../port/store'
 
 import '../client/styles/tailwind.css'
@@ -47,6 +48,10 @@ const store = makePortStore({
   key: () => keyInput?.value ?? '',
   initialSession: new URLSearchParams(window.location.search).get('session') ?? '',
 })
+
+// The ported browser fetches one step's header and content through this face.
+// Without it the panel reports that the environment cannot load a header.
+installHistoryFace({ apiBase: apiBase(), key: () => keyInput?.value ?? '' })
 
 refreshButton?.addEventListener('click', () => { void store.refresh() })
 keyInput?.addEventListener('keydown', event => {

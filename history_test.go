@@ -5,71 +5,110 @@ import (
 	"testing"
 )
 
-// The client asks for history through its own routes when the timeline is
-// scrolled. After the prompt text of older requests is dropped, those routes
-// must still answer: the chart and the counts come from counters, and only the
-// expandable text is gone. An empty page here shows a timeline that stops at the
-// newest step.
-func TestHistoryRouteStillAnswersAfterTextIsDropped(t *testing.T) {
+// The ported browser reads a step's header and system prompt from events of type
+// "request/header" and "system/message". Without them the panel reports that the
+// environment cannot load a header, which is what the operator saw.
+func TestHistoryServesHeaderAndSystemEvents(t *testing.T) {
 	p := newPlugin(nil)
 	p.cfg.Enabled = true
 
-	for i := 0; i < 6; i++ {
-		body, _ := json.Marshal(map[string]any{
-			"model": "m",
-			"messages": []map[string]any{
-				{"role": "user", "content": repeatTextForHistory(i)},
-			},
-		})
-		trace := "h" + string(rune('0'+i))
-		intercept, _ := json.Marshal(map[string]any{
-			"RequestID": trace, "TraceID": trace, "SourceFormat": "openai",
-			"Model": "m", "Body": body,
-		})
-		p.handle("request.intercept_before", intercept)
-		usageRaw, _ := json.Marshal(map[string]any{
-			"TraceID": trace, "Model": "m", "SessionID": "s-history",
-			"Detail": map[string]any{"InputTokens": 3000 + i*50, "TotalTokens": 3000 + i*50},
-		})
-		p.handle("usage.handle", usageRaw)
+	body := []byte(`{"model":"m","messages":[{"role":"system","content":"You are a careful engineer."},` +
+		`{"role":"user","content":"explain the parser"}],` +
+		`"tools":[{"type":"function","function":{"name":"bash","description":"Run a command",` +
+		`"parameters":{"type":"object","properties":{"command":{"type":"string"}}}}}]}`)
+	intercept, _ := json.Marshal(map[string]any{
+		"RequestID": "r1", "TraceID": "t1", "SourceFormat": "openai", "Model": "m", "Body": body,
+	})
+	p.handle("request.intercept_before", intercept)
+	p.handle("usage.handle", []byte(
+		`{"TraceID":"t1","Model":"m","SessionID":"s-hist","Detail":{"InputTokens":300,"TotalTokens":300}}`))
+
+	raw, _ := json.Marshal(map[string]any{"sessionId": "s-hist", "throughSeq": 1, "beforeSeq": 2})
+	answer := p.historyPage(raw)
+
+	payload, ok := answer.(map[string]any)
+	if !ok {
+		t.Fatalf("answer is %T, want a map", answer)
+	}
+	value, _ := payload["value"].(map[string]any)
+	rows, _ := value["rows"].([]historyRow)
+	if len(rows) == 0 {
+		t.Fatal("no rows: the client would report that a header cannot be loaded")
 	}
 
-	for _, part := range []string{"requests", "events", "nodes"} {
-		payload, ok := p.handleClientRoute(routeHistory, "POST",
-			[]byte(`{"sessionId":"s-history","part":"`+part+`"}`))
-		if !ok {
-			t.Fatalf("history route did not match for %q", part)
-		}
-		envelope, _ := payload.(map[string]any)
-		if envelope["ok"] != true {
-			t.Fatalf("history for %q answered %v", part, envelope)
-		}
-		page, _ := envelope["value"].(map[string]any)
-		if total, _ := page["total"].(int); total == 0 && part == "requests" {
-			t.Errorf("history for %q is empty, want every request", part)
+	var sawHeader, sawSystem bool
+	for _, row := range rows {
+		switch row.Type {
+		case "request/header":
+			sawHeader = true
+			header, _ := row.Data["header"].(map[string]any)
+			if header == nil {
+				t.Fatal("the header event carries no header")
+			}
+			tools, _ := header["tools"].([]map[string]any)
+			if len(tools) == 0 {
+				t.Error("the header event lists no tools, so the schemas panel stays empty")
+			}
+			if name, _ := tools[0]["name"].(string); name != "bash" {
+				t.Errorf("tool name = %q, want bash", name)
+			}
+			if tokens, _ := header["systemTokens"].(int64); tokens == 0 {
+				t.Error("the header event reports no system prompt size")
+			}
+		case "system/message":
+			sawSystem = true
+			message, _ := row.Data["message"].(map[string]any)
+			blocks, _ := message["content"].([]map[string]any)
+			if len(blocks) == 0 {
+				t.Fatal("the system message carries no content blocks")
+			}
+			if text, _ := blocks[0]["text"].(string); text == "" {
+				t.Error("the system message text is empty")
+			}
 		}
 	}
-
-	// The detail route must still carry the series the chart draws.
-	payload, _ := p.handleClientRoute(routeDetail, "POST", []byte(`{"sessionId":"s-history"}`))
-	envelope, _ := payload.(map[string]any)
-	detail, _ := envelope["value"].(map[string]any)
-	requests, _ := detail["requests"].([]map[string]any)
-	if len(requests) != 6 {
-		t.Fatalf("detail carries %d requests, want 6", len(requests))
+	if !sawHeader {
+		t.Error("no request/header event was served")
 	}
-	for _, record := range requests {
-		composition, _ := record["composition"].(map[string]int)
-		if len(composition) == 0 {
-			t.Errorf("request %v has no split, its bar would be empty", record["seq"])
-		}
+	if !sawSystem {
+		t.Error("no system/message event was served")
 	}
 }
 
-func repeatTextForHistory(n int) string {
-	out := ""
-	for i := 0; i < 60+n; i++ {
-		out += "context line "
+// A step whose prompt text was dropped still answers, so the browser can show
+// counters instead of failing to load anything.
+func TestHistoryAnswersAfterTheTextIsDropped(t *testing.T) {
+	p := newPlugin(nil)
+	p.cfg.Enabled = true
+
+	for i := 0; i < 3; i++ {
+		body := []byte(`{"model":"m","messages":[{"role":"system","content":"be brief"},` +
+			`{"role":"user","content":"turn ` + string(rune('0'+i)) + `"}]}`)
+		trace := "t" + string(rune('0'+i))
+		intercept, _ := json.Marshal(map[string]any{
+			"RequestID": trace, "TraceID": trace, "SourceFormat": "openai", "Model": "m", "Body": body,
+		})
+		p.handle("request.intercept_before", intercept)
+		p.handle("usage.handle", []byte(
+			`{"TraceID":"`+trace+`","Model":"m","SessionID":"s-old","Detail":{"InputTokens":120,"TotalTokens":120}}`))
 	}
-	return out
+
+	// The superseded steps lost their prompt text; the newest still has it.
+	raw, _ := json.Marshal(map[string]any{"sessionId": "s-old", "throughSeq": 3})
+	answer := p.historyPage(raw)
+	payload, _ := answer.(map[string]any)
+	value, _ := payload["value"].(map[string]any)
+	rows, _ := value["rows"].([]historyRow)
+	if len(rows) < 3 {
+		t.Fatalf("%d rows for three steps, the page is short", len(rows))
+	}
+	for _, row := range rows {
+		if row.Type != "request/header" {
+			continue
+		}
+		header, _ := row.Data["header"].(map[string]any)
+		if header == nil {
+			t.Errorf("step %d has no header record", row.Seq)
+		}
+	}
 }

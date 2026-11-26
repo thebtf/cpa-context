@@ -20,8 +20,8 @@ const (
 	// CatSkill is injected context that a skill load produced. The client shows
 	// it as its own category, so a skill's cost is not hidden inside injections.
 	CatSkill = "skill"
-	CatImage      = "image"
-	CatOther      = "other"
+	CatImage = "image"
+	CatOther = "other"
 )
 
 var categoryOrder = []string{
@@ -92,16 +92,100 @@ func (c *composition) setTitle(text string) {
 // word boundary. When nothing readable is left the title stays empty and the
 // caller falls back to the session id.
 func titleFromText(text string) string {
-	for _, paragraph := range splitParagraphs(withoutCodeBlocks(text)) {
+	cleaned := withoutHarnessBlocks(withoutCodeBlocks(text))
+	for _, paragraph := range splitParagraphs(cleaned) {
 		for _, line := range strings.Split(paragraph, "\n") {
-			candidate := stripMarkdownPrefix(line)
-			if !hasWords(candidate) {
+			candidate := stripMarkdownPrefix(stripTags(line))
+			if !hasWords(candidate) || looksLikeHarnessTag(candidate) || looksLikeRoleLabel(candidate) {
 				continue
 			}
 			return shortenTitle(candidate)
 		}
 	}
 	return ""
+}
+
+// harnessTags are the wrapper elements a harness puts into a user turn. Their
+// content is machine instruction, not the person's own words, and naming a
+// conversation after one of them tells the operator nothing about the work.
+var harnessTags = []string{
+	"system-reminder", "system_reminder", "reminder", "instructions",
+	"tool_result", "tool_use", "file_content", "attachment", "thinking",
+	"antml:thinking", "antml:function_calls", "function_results",
+}
+
+// withoutHarnessBlocks drops the content of every harness wrapper, including an
+// unclosed one that runs to the end of the prompt.
+func withoutHarnessBlocks(text string) string {
+	out := text
+	for _, tag := range harnessTags {
+		out = stripTagBlock(out, "<"+tag+">", "</"+tag+">")
+	}
+	return out
+}
+
+func stripTagBlock(text, open, close string) string {
+	for {
+		start := strings.Index(text, open)
+		if start < 0 {
+			return text
+		}
+		rest := text[start:]
+		end := strings.Index(rest, close)
+		if end < 0 {
+			// An unclosed wrapper swallows the rest: nothing after it can be
+			// trusted to be the person's own text.
+			return text[:start]
+		}
+		text = text[:start] + rest[end+len(close):]
+	}
+}
+
+// looksLikeHarnessTag reports a line that is only a tag, such as "</user>" or
+// "<topic>", which carries no meaning as a title.
+func looksLikeHarnessTag(line string) bool {
+	trimmed := strings.TrimSpace(line)
+	if len(trimmed) < 3 || !strings.HasPrefix(trimmed, "<") || !strings.HasSuffix(trimmed, ">") {
+		return false
+	}
+	inner := strings.Trim(trimmed, "<>/ ")
+	return inner != "" && !strings.ContainsAny(inner, " \t")
+}
+
+// roleLabels are the bare markers a client writes above a block to say what the
+// block is. They name the envelope, not the request, so they make a useless
+// title when a prompt happens to start with one.
+var roleLabels = map[string]struct{}{
+	"topic": {}, "user": {}, "assistant": {}, "system": {}, "human": {},
+	"message": {}, "prompt": {}, "request": {}, "context": {}, "input": {},
+}
+
+// looksLikeRoleLabel reports a line that only names the block it introduces.
+func looksLikeRoleLabel(line string) bool {
+	trimmed := strings.Trim(strings.TrimSpace(line), "#*>_- \t")
+	if trimmed == "" {
+		return false
+	}
+	_, ok := roleLabels[strings.ToLower(trimmed)]
+	return ok
+}
+
+// stripTags removes wrapper tags from a line, keeping the text between them.
+func stripTags(line string) string {
+	var out strings.Builder
+	for i := 0; i < len(line); i++ {
+		if line[i] != '<' {
+			out.WriteByte(line[i])
+			continue
+		}
+		end := strings.IndexByte(line[i:], '>')
+		if end < 0 {
+			out.WriteString(line[i:])
+			break
+		}
+		i += end
+	}
+	return out.String()
 }
 
 // splitParagraphs splits on blank lines, so a four-paragraph prompt yields the

@@ -117,7 +117,18 @@ func (h managementHandler) HandleManagement(_ context.Context, req pluginapi.Man
 		if !ok {
 			return jsonResponse(map[string]any{"error": "session not found", "id": id}), nil
 		}
-		return jsonResponse(built), nil
+		// The fleet view reads its roster from these two keys. Sending them with
+		// the rest of the projection is what makes a family visible at all; the
+		// client draws an empty fleet without them.
+		return jsonResponse(map[string]any{
+			"contextTimeline":  built.ContextTimeline,
+			"contextPressure":  built.ContextPressure,
+			"contextBreakdown": built.ContextBreakdown,
+			"contextHeaders":   built.ContextHeaders,
+			"tokenUsage":       built.TokenUsage,
+			"agentTeam":        h.plugin.teamProjection(id),
+			"subagentCatalog":  h.plugin.subagentCatalog(id),
+		}), nil
 	case strings.HasSuffix(path, "/events"):
 		limit := 500
 		sessionID := ""

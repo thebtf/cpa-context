@@ -143,7 +143,7 @@ let declaredPage: SessionPageFace['page'] | undefined
 
 const faceListeners = new Set<() => void>()
 
-function setPageFace(page: SessionPageFace['page'] | undefined): void {
+export function setPageFace(page: SessionPageFace['page'] | undefined): void {
   declaredPage = page
   for (const listener of [...faceListeners]) listener()
 }

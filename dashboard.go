@@ -44,10 +44,12 @@ func assetFor(path string) (string, string, bool) {
 	return "", "", false
 }
 
-// dashboardHTML returns the page that mounts the built client. The management
-// key field and the refresh button live at the bottom of the sidebar, because
-// the top-right corner of a browser is covered by extension and profile
-// controls.
+// dashboardHTML returns the page that mounts the built client.
+//
+// The management key and the refresh button sit on the left, right after the
+// title, and the bar is narrow enough that they never reach the right edge. The
+// top-right corner of a browser belongs to the extension and profile controls,
+// which overlay the page and hide anything placed there.
 func dashboardHTML() string {
 	var page strings.Builder
 	page.WriteString(`<!doctype html>
@@ -77,10 +79,11 @@ html, body { height: 100%; margin: 0; background: #0d1017; }
 <div id="shell">
   <div id="bar">
     <strong style="color:#e6e9ef">CPA context</strong>
-    <span>requests observed by this plugin</span>
-    <span class="grow"></span>
     <input id="key" type="password" placeholder="management key" autocomplete="off">
     <button id="refresh">Refresh</button>
+    <span id="status" style="margin-left:4px"></span>
+    <span class="grow"></span>
+    <span>requests observed by this plugin</span>
   </div>
   <div id="root"></div>
 </div>
