@@ -93,6 +93,25 @@ export function App({ store }: AppProps): JSX.Element {
     if ((document.getElementById('key') as HTMLInputElement | null)?.value) void store.refresh()
   }, [store])
 
+  // The operator keeps this page open while traffic flows. Without a poll the
+  // list freezes at whatever existed when it loaded, which looks the same as a
+  // proxy that stopped receiving requests.
+  useEffect(() => {
+    let timer: ReturnType<typeof setTimeout> | null = null
+    let stopped = false
+    const tick = (): void => {
+      if (stopped) return
+      const hasKey = Boolean((document.getElementById('key') as HTMLInputElement | null)?.value)
+      if (hasKey && document.visibilityState === 'visible') void store.refresh()
+      timer = setTimeout(tick, hasKey ? 5000 : 1500)
+    }
+    timer = setTimeout(tick, 5000)
+    return () => {
+      stopped = true
+      if (timer !== null) clearTimeout(timer)
+    }
+  }, [store])
+
   useEffect(() => {
     if (sessions.length === 0) return
     if (sessions.some(row => row.id === selected)) return
