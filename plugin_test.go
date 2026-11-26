@@ -820,7 +820,6 @@ func TestClientRoutesAnswerWithValues(t *testing.T) {
 	const session = `{"sessionId":"s-routes"}`
 	for name, route := range map[string]string{
 		"detail":  routeDetail,
-		"delta":   routeDelta,
 		"recom":   routeRecom,
 		"version": routeVersion,
 	} {
@@ -835,6 +834,25 @@ func TestClientRoutesAnswerWithValues(t *testing.T) {
 		if _, present := envelope["value"]; !present {
 			t.Fatalf("%s route carries no value", name)
 		}
+	}
+
+	// The step diff is refused on purpose: the plugin keeps only the newest
+	// prompt, and the client falls back to its own local comparison when this
+	// route fails. A fabricated answer here showed the newest prompt as the
+	// difference between two other steps.
+	delta, ok := p.handleClientRoute(routeDelta, "POST", []byte(session))
+	if !ok {
+		t.Fatal("delta route was not matched")
+	}
+	deltaEnvelope, isMap := delta.(map[string]any)
+	if !isMap {
+		t.Fatalf("delta route answered %T, want a map", delta)
+	}
+	if deltaEnvelope["ok"] != false {
+		t.Errorf("delta route claims success: %#v", delta)
+	}
+	if message, _ := deltaEnvelope["error"].(string); message == "" {
+		t.Error("delta route refuses without saying why")
 	}
 
 	facts, ok := p.handleClientRoute(routeFacts, "POST", []byte(`{"sessionId":"s-routes","parts":["head","series","files","commands"]}`))

@@ -122,31 +122,25 @@ func (p *plugin) factsBody(raw []byte) any {
 	})
 }
 
-// deltaBody answers a step comparison. The head projection describes the newest
-// prompt only, so a step's own nodes are not available on demand: answering with
-// the head and an empty diff keeps the browser consistent, while a fabricated
-// difference would show content that step never carried.
+// deltaBody answers a step comparison. CPA never hands a plugin a transcript, and
+// the plugin keeps only the newest prompt of a conversation, so a step's own nodes
+// are not available: it knows the token split of every step but not the text of an
+// old one.
+//
+// This answers with a refusal rather than with the newest prompt. The client falls
+// back to its own local diff when the route fails, which compares what it already
+// holds and is honest about being a comparison of those snapshots. Sending the head
+// here made the panel show the newest prompt as if it were the difference.
 func (p *plugin) deltaBody(raw []byte) any {
 	var request struct {
 		SessionID string `json:"sessionId"`
 		Seq       int    `json:"seq"`
+		BaseSeq   int    `json:"baseSeq"`
 	}
 	if err := json.Unmarshal(raw, &request); err != nil {
 		return clientError("invalid request")
 	}
-	built, ok := p.store.projectionFor(request.SessionID)
-	if !ok {
-		return clientError("session not found")
-	}
-	timeline := built.ContextTimeline
-	return clientEnvelope(map[string]any{
-		"added":         timeline.Nodes,
-		"viewNodes":     timeline.Nodes,
-		"counts":        map[string]int{},
-		"tokens":        map[string]int{},
-		"removedCounts": map[string]int{},
-		"tokenUp":       map[string]int{},
-	})
+	return clientError("a step's own prompt is not retained, so it cannot be diffed")
 }
 
 // recomBody replaces the upstream sponsor feed with an empty list: the ported
