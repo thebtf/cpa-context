@@ -398,6 +398,10 @@ type usageRequest struct {
 	Latency         int64  `json:"Latency"`
 	TTFT            int64  `json:"TTFT"`
 	Failed          bool   `json:"Failed"`
+	// RequestedAt is when the proxy received the request. Usage arrives after the
+	// upstream answers, so a record that only used the arrival time placed every
+	// request at its own completion.
+	RequestedAt string `json:"RequestedAt"`
 	Detail          struct {
 		InputTokens         int64 `json:"InputTokens"`
 		OutputTokens        int64 `json:"OutputTokens"`
@@ -430,7 +434,18 @@ func (p *plugin) usage(raw []byte) any {
 		TotalTokens:         req.Detail.TotalTokens,
 	}, req.Provider, req.ExecutorType)
 
+	// The request's own arrival time is authoritative for the timeline: a usage
+	// record only exists once the upstream has answered.
+	requestedAt := time.Time{}
+	for _, layout := range []string{time.RFC3339Nano, time.RFC3339} {
+		if parsed, err := time.Parse(layout, req.RequestedAt); err == nil {
+			requestedAt = parsed
+			break
+		}
+	}
+
 	p.store.recordUsage(usage{
+		RequestedAt:  requestedAt,
 		TraceID:      req.TraceID,
 		RequestID:    req.RequestID,
 		SessionID:    req.SessionID,

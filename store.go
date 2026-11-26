@@ -303,7 +303,11 @@ type usage struct {
 	LatencyMs    int64
 	TTFTMs       int64
 	Failed       bool
-	ClientType   string
+	// RequestedAt is when the proxy received the request, zero when unknown. The
+	// usage record only exists once the upstream has answered, so using its
+	// arrival time would place every request at its own completion.
+	RequestedAt time.Time
+	ClientType  string
 	AgentName    string
 	IsSubagent   bool
 	IsFork       bool
@@ -322,11 +326,18 @@ func (s *store) recordUsage(u usage) {
 	} else {
 		// A usage record without a parsed request still carries a context total,
 		// which is what the timeline needs. Build a counters-only snapshot.
+		// A usage record with no interception still needs a position on the
+		// timeline. The request's own arrival time is used when the host reported
+		// one, so the chart places it where the request was made.
+		startedAt := u.RequestedAt
+		if startedAt.IsZero() {
+			startedAt = time.Now()
+		}
 		snap = &snapshot{
 			TraceID:   u.TraceID,
 			RequestID: u.RequestID,
 			SessionID: u.SessionID,
-			StartedAt: time.Now(),
+			StartedAt: startedAt,
 		}
 	}
 
