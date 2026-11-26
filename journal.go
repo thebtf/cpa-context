@@ -138,6 +138,21 @@ func openJournal(path string) *journal {
 	}
 	// One writer keeps the file simple; the dashboard reads memory, not the db.
 	db.SetMaxOpenConns(1)
+	// An older build, or another program, may have left tables under these names
+	// with a different shape. The schema is applied with IF NOT EXISTS, which
+	// silently keeps the wrong table and then fails on its indexes, so the shape
+	// is checked first and a foreign layout is rebuilt.
+	if !j.schemaUsable(db) {
+		// One statement per call: this driver executes only the first command in a
+		// multi-statement string.
+		for _, drop := range []string{`DROP TABLE IF EXISTS requests`, `DROP TABLE IF EXISTS events`} {
+			if _, err := db.Exec(drop); err != nil {
+				db.Close()
+				j.broken = err.Error()
+				return j
+			}
+		}
+	}
 	if _, err := db.Exec(schemaSQL); err != nil {
 		db.Close()
 		j.broken = err.Error()
@@ -145,6 +160,57 @@ func openJournal(path string) *journal {
 	}
 	j.db = db
 	return j
+}
+
+// schemaUsable reports whether the tables this plugin writes to have the columns
+// it expects. An empty database answers yes after the schema is applied.
+func (j *journal) schemaUsable(db *sql.DB) bool {
+	want := map[string][]string{
+		"requests": {"seq", "trace_id", "session_id", "started_at", "body"},
+		"events":   {"seq", "session_id", "at", "kind", "detail", "delta"},
+	}
+	for table, columns := range want {
+		present, err := columnsOf(db, table)
+		if err != nil {
+			return false
+		}
+		// A table that does not exist yet is fine: the schema was just applied.
+		if len(present) == 0 {
+			continue
+		}
+		for _, column := range columns {
+			if !present[column] {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+// columnsOf lists a table's columns. It uses PRAGMA rather than the
+// pragma_table_info table function, which this driver does not serve.
+func columnsOf(db *sql.DB, table string) (map[string]bool, error) {
+	rows, err := db.Query(`PRAGMA table_info(` + table + `)`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]bool{}
+	for rows.Next() {
+		var (
+			cid      int
+			name     string
+			kind     string
+			notNull  int
+			defaultV sql.NullString
+			primaryK int
+		)
+		if err := rows.Scan(&cid, &name, &kind, &notNull, &defaultV, &primaryK); err != nil {
+			return nil, err
+		}
+		out[name] = true
+	}
+	return out, rows.Err()
 }
 
 const schemaSQL = `
@@ -314,7 +380,6 @@ func (j *journal) replay() ([]*snapshot, []event) {
 	}
 	return snaps, events
 }
-
 
 func (j *journal) reset() {
 	if j == nil {
