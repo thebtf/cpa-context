@@ -986,7 +986,7 @@ func TestResetClearsTheJournal(t *testing.T) {
 		"Detail": map[string]any{"InputTokens": 100, "TotalTokens": 100},
 	})
 	p.handle("usage.handle", usageRaw)
-	p.store.reset()
+	p.store.reset(false)
 	p.shutdown()
 
 	reopened := newPlugin(nil)

@@ -136,7 +136,7 @@ func (h managementHandler) HandleManagement(_ context.Context, req pluginapi.Man
 		if req.Method != http.MethodPost {
 			return errorResponse(http.StatusMethodNotAllowed, "POST required"), nil
 		}
-		h.plugin.store.reset()
+		h.plugin.store.reset(false)
 		return jsonResponse(map[string]any{"ok": true}), nil
 	}
 	return errorResponse(http.StatusNotFound, "unknown route"), nil

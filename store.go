@@ -1012,19 +1012,30 @@ func (s *store) setLimits(next limits) {
 	}
 }
 
-func (s *store) reset() {
+// reset forgets every conversation. With keepDisk set the journal keeps what it
+// holds, which is what a shutdown wants: the process stops answering with the
+// previous run's picture, and the next start reads the same file back. Clearing
+// the disk is what the operator's Reset button asks for.
+func (s *store) reset(keepDisk bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	// reset is called with the store lock held, so the field is read directly
-	// rather than through the locking accessor, which would deadlock here.
+	// The handle is released either way: after this the store holds no journal,
+	// so a descriptor left open would be both a leak and a locked file.
 	if s.journal != nil {
-		s.journal.reset()
+		if !keepDisk {
+			s.journal.reset()
+		}
+		s.journal.close()
 	}
 	s.projections = make(map[string]*cachedProjection)
 	s.sessions = make(map[string]*session)
+	s.bySession = make(map[string][]*snapshot)
 	s.pending = make(map[string]*snapshot)
 	s.recent = nil
 	s.events = nil
+	// The handle is released either way, so nothing can write to a closed file
+	// after the reset and the next configure opens a fresh one.
+	s.journal = nil
 }
 
 func contains(values []string, target string) bool {

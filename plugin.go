@@ -1,9 +1,9 @@
 package main
 
 import (
-	"path/filepath"
 	"encoding/json"
 	"net/http"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -17,7 +17,7 @@ import (
 
 const (
 	pluginID      = "cpa-context"
-	pluginVersion = "0.13.2"
+	pluginVersion = "0.13.3"
 	pluginRepo    = "https://github.com/thebtf/cpa-context"
 )
 
@@ -79,11 +79,12 @@ func newPlugin(call hostCall) *plugin {
 func (p *plugin) attachJournal(path string) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	// Reconfiguring with a different directory must release the previous file.
-	// Opening a second handle without closing the first leaves the old database
-	// locked and keeps writing to a file the operator no longer pointed at.
+	// The same file can be spelled with either separator, and a configure that
+	// only changed a limit must not close and reopen the journal: the reopen
+	// replays the file and would duplicate what is already in memory.
+	path = filepath.Clean(path)
 	if existing := p.store.journalOf(); existing != nil {
-		if existing.path == path {
+		if filepath.Clean(existing.path) == path {
 			return
 		}
 		existing.close()
@@ -139,7 +140,7 @@ func (p *plugin) shutdown() {
 	// Closing flushes the write-ahead log; the observations stay on disk so the
 	// next start reads them back.
 	opened.close()
-	p.store.reset()
+	p.store.reset(true)
 }
 
 func (p *plugin) handle(method string, raw []byte) (any, *rpcError) {
@@ -409,7 +410,7 @@ type usageRequest struct {
 	// upstream answers, so a record that only used the arrival time placed every
 	// request at its own completion.
 	RequestedAt string `json:"RequestedAt"`
-	Detail          struct {
+	Detail      struct {
 		InputTokens         int64 `json:"InputTokens"`
 		OutputTokens        int64 `json:"OutputTokens"`
 		ReasoningTokens     int64 `json:"ReasoningTokens"`
