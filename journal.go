@@ -171,7 +171,7 @@ CREATE INDEX IF NOT EXISTS events_session ON events(session_id, seq);
 // appendRequest records one finished request. A duplicate trace id replaces the
 // earlier row: the same request observed twice is one request.
 func (j *journal) appendRequest(snap *snapshot) {
-	if j == nil || j.db == nil {
+	if j == nil {
 		return
 	}
 	// The journal keeps counters, not prompt text: the text of an old request is
@@ -185,6 +185,9 @@ func (j *journal) appendRequest(snap *snapshot) {
 	}
 	j.mu.Lock()
 	defer j.mu.Unlock()
+	if j.db == nil {
+		return
+	}
 	if snap.TraceID != "" {
 		if _, err := j.db.Exec(`DELETE FROM requests WHERE trace_id = ?`, snap.TraceID); err != nil {
 			return
@@ -197,11 +200,14 @@ func (j *journal) appendRequest(snap *snapshot) {
 }
 
 func (j *journal) appendEvent(ev event) {
-	if j == nil || j.db == nil {
+	if j == nil {
 		return
 	}
 	j.mu.Lock()
 	defer j.mu.Unlock()
+	if j.db == nil {
+		return
+	}
 	_, _ = j.db.Exec(
 		`INSERT INTO events (session_id, at, kind, detail, delta) VALUES (?, ?, ?, ?, ?)`,
 		ev.SessionID, ev.At.UnixMilli(), ev.Kind, ev.Detail, ev.Delta,
@@ -222,12 +228,15 @@ const journalRows = 2000
 // how many were removed. It runs at startup and on a slow ticker, so a proxy
 // that stays up for months does not grow a file it then has to read back.
 func (j *journal) pruneOld(now time.Time) int {
-	if j == nil || j.db == nil {
+	if j == nil {
 		return 0
 	}
 	cutoff := now.Add(-journalRetention).UnixMilli()
 	j.mu.Lock()
 	defer j.mu.Unlock()
+	if j.db == nil {
+		return 0
+	}
 	removed := 0
 	if result, err := j.db.Exec(`DELETE FROM requests WHERE started_at < ?`, cutoff); err == nil {
 		if n, errRows := result.RowsAffected(); errRows == nil {
@@ -253,11 +262,14 @@ func (j *journal) pruneOld(now time.Time) int {
 
 // replay reads the stored observations back, oldest first.
 func (j *journal) replay() ([]*snapshot, []event) {
-	if j == nil || j.db == nil {
+	if j == nil {
 		return nil, nil
 	}
 	j.mu.Lock()
 	defer j.mu.Unlock()
+	if j.db == nil {
+		return nil, nil
+	}
 
 	snaps := make([]*snapshot, 0, 256)
 	rows, err := j.db.Query(`SELECT body FROM requests ORDER BY seq`)
@@ -305,11 +317,14 @@ func (j *journal) replay() ([]*snapshot, []event) {
 
 
 func (j *journal) reset() {
-	if j == nil || j.db == nil {
+	if j == nil {
 		return
 	}
 	j.mu.Lock()
 	defer j.mu.Unlock()
+	if j.db == nil {
+		return
+	}
 	_, _ = j.db.Exec(`DELETE FROM requests`)
 	_, _ = j.db.Exec(`DELETE FROM events`)
 }
@@ -317,7 +332,7 @@ func (j *journal) reset() {
 // pruneEvery bounds the file while the proxy stays up. Startup alone is not
 // enough: a process that runs for a week would write for a week before trimming.
 func (j *journal) pruneEvery(interval time.Duration, stop <-chan struct{}) {
-	if j == nil || j.db == nil {
+	if j == nil {
 		return
 	}
 	go func() {
@@ -335,7 +350,7 @@ func (j *journal) pruneEvery(interval time.Duration, stop <-chan struct{}) {
 }
 
 func (j *journal) close() {
-	if j == nil || j.db == nil {
+	if j == nil {
 		return
 	}
 	select {
@@ -345,6 +360,9 @@ func (j *journal) close() {
 	}
 	j.mu.Lock()
 	defer j.mu.Unlock()
+	if j.db == nil {
+		return
+	}
 	// Closing the handle is not enough on Windows while other goroutines may
 	// still reach for the file, so the database is also released explicitly.
 	_, _ = j.db.Exec(`PRAGMA wal_checkpoint(TRUNCATE)`)

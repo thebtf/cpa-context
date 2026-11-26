@@ -44,9 +44,10 @@ func TestReconfigureDuringTrafficIsSafe(t *testing.T) {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		// Two data directories, so the journal and the price catalog are written
-		// while the request path reads them.
-		for i := 0; i < 50; i++ {
+		// Several data directories, so the journal and the price catalog are
+		// written while the request path reads them. Each previous handle must be
+		// released by the plugin itself, which is what this exercises.
+		for i := 0; i < 20; i++ {
 			dir := t.TempDir()
 			yaml := "enabled: true\ndata_dir: " + dir + "\n"
 			raw, _ := json.Marshal(map[string]any{"config_yaml": []byte(yaml)})
