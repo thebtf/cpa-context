@@ -685,15 +685,41 @@ func (s *store) itemBudgetLocked() int {
 	return held
 }
 
+// prunePendingLocked keeps the pending map bounded. Its entries hold parsed
+// prompt text, which is the largest thing the store can hold, so an unbounded
+// map would grow with traffic whenever requests finish slower than they arrive.
+//
+// Age alone is not enough: under steady load every entry is young, nothing is
+// old enough to drop, and the map grows anyway. When the cap is still exceeded
+// after the age sweep, the oldest entries go regardless of age. Their usage
+// record still lands, because recordUsage builds a counters-only snapshot when
+// it finds no pending entry.
 func (s *store) prunePendingLocked() {
 	if len(s.pending) <= s.limits.maxRecent {
 		return
 	}
 	cutoff := time.Now().Add(-s.limits.maxPendingAge)
 	for traceID, snap := range s.pending {
-		if snap.StartedAt.Before(cutoff) {
+		// A request that never set a start time is not old: a zero time sorts
+		// before every cutoff and would drop exactly the newest requests.
+		if !snap.StartedAt.IsZero() && snap.StartedAt.Before(cutoff) {
 			delete(s.pending, traceID)
 		}
+	}
+	if len(s.pending) <= s.limits.maxRecent {
+		return
+	}
+	type entry struct {
+		trace string
+		at    time.Time
+	}
+	entries := make([]entry, 0, len(s.pending))
+	for traceID, snap := range s.pending {
+		entries = append(entries, entry{trace: traceID, at: snap.StartedAt})
+	}
+	sort.Slice(entries, func(i, j int) bool { return entries[i].at.Before(entries[j].at) })
+	for i := 0; i < len(entries)-s.limits.maxRecent; i++ {
+		delete(s.pending, entries[i].trace)
 	}
 }
 
