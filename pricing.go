@@ -49,6 +49,17 @@ type priceCatalog struct {
 	loadedAt time.Time
 	failedAt time.Time
 	client   *http.Client
+	url      string
+	// interval is the refresh period. It is a field so a test can shorten it.
+	interval time.Duration
+}
+
+// every is the refresh period, with the production value when unset.
+func (c *priceCatalog) every() time.Duration {
+	if c.interval > 0 {
+		return c.interval
+	}
+	return priceCatalogTTL
 }
 
 func newPriceCatalog(dir string) *priceCatalog {
@@ -58,16 +69,26 @@ func newPriceCatalog(dir string) *priceCatalog {
 	}
 	return &priceCatalog{
 		path:   path,
+		url:    priceCatalogURL,
 		client: &http.Client{Timeout: priceFetchTimeout},
 	}
 }
 
-// startLoads the cached book and refreshes it when it is old. It returns at
+// start loads the cached book and refreshes it when it is old. It returns at
 // once: the dashboard renders without costs until the book is ready.
+//
+// The refresh repeats. A model is released and repriced faster than a proxy is
+// restarted, and a book fetched once at startup would quote the prices of the
+// day the process began for as long as it runs.
 func (c *priceCatalog) start() {
 	c.loadFromDisk()
 	go func() {
 		if c.book == nil || time.Since(c.loadedAt) > priceCatalogTTL {
+			c.fetch()
+		}
+		ticker := time.NewTicker(c.every())
+		defer ticker.Stop()
+		for range ticker.C {
 			c.fetch()
 		}
 	}()
@@ -102,7 +123,11 @@ func (c *priceCatalog) fetch() {
 	if recent {
 		return
 	}
-	resp, err := c.client.Get(priceCatalogURL)
+	url := c.url
+	if url == "" {
+		url = priceCatalogURL
+	}
+	resp, err := c.client.Get(url)
 	if err != nil {
 		c.markFailed()
 		return
