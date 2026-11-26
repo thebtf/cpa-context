@@ -79,11 +79,18 @@ func newPlugin(call hostCall) *plugin {
 func (p *plugin) attachJournal(path string) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	if p.store.journal != nil {
-		return
+	// Reconfiguring with a different directory must release the previous file.
+	// Opening a second handle without closing the first leaves the old database
+	// locked and keeps writing to a file the operator no longer pointed at.
+	if existing := p.store.journalOf(); existing != nil {
+		if existing.path == path {
+			return
+		}
+		existing.close()
+		p.store.setJournal(nil)
 	}
 	opened := openJournal(path)
-	p.store.journal = opened
+	p.store.setJournal(opened)
 	// Drop what is past retention before loading, so an old file does not fill
 	// memory on the way in.
 	opened.pruneOld(timeNow())

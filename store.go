@@ -587,6 +587,8 @@ func (s *store) recordEventsLocked(sess *session, snap *snapshot) {
 }
 
 func (s *store) pushEventLocked(ev event) {
+	// The journal can be swapped while a running proxy reconfigures, so it is
+	// read under the same lock that replaces it. The methods are nil-safe.
 	s.journal.appendEvent(ev)
 	s.events = append(s.events, ev)
 	if len(s.events) > s.limits.maxEvents {
@@ -970,6 +972,8 @@ func (s *store) setLimits(next limits) {
 func (s *store) reset() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	// reset is called with the store lock held, so the field is read directly
+	// rather than through the locking accessor, which would deadlock here.
 	if s.journal != nil {
 		s.journal.reset()
 	}
@@ -1002,3 +1006,20 @@ func firstNonZero(values ...int64) int64 {
 // map iteration.
 
 // reachedFromAny reports whether any id has a parent chain that terminates.
+
+// setJournal replaces the persistent store under the store lock, so a request
+// path that is already running cannot observe a half-swapped value.
+func (s *store) setJournal(next *journal) *journal {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	previous := s.journal
+	s.journal = next
+	return previous
+}
+
+// journalOf returns the current journal under the store lock.
+func (s *store) journalOf() *journal {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.journal
+}
