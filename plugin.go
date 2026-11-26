@@ -17,7 +17,7 @@ import (
 
 const (
 	pluginID      = "cpa-context"
-	pluginVersion = "0.12.0"
+	pluginVersion = "0.13.0"
 	pluginRepo    = "https://github.com/thebtf/cpa-context"
 )
 

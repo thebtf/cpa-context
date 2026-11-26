@@ -308,10 +308,10 @@ type usage struct {
 	// arrival time would place every request at its own completion.
 	RequestedAt time.Time
 	ClientType  string
-	AgentName    string
-	IsSubagent   bool
-	IsFork       bool
-	Compaction   bool
+	AgentName   string
+	IsSubagent  bool
+	IsFork      bool
+	Compaction  bool
 }
 
 // recordUsage attaches provider counters to the request it belongs to and folds
@@ -494,7 +494,7 @@ func (s *store) applyToSessionLocked(snap *snapshot) {
 		sess.Timeline = sess.Timeline[len(sess.Timeline)-s.limits.maxTimeline:]
 	}
 
-		// The request observed last defines the current window. Arrival order, not the
+	// The request observed last defines the current window. Arrival order, not the
 	// timestamp: a retry or a clock that stepped can carry an earlier stamp, and
 	// comparing stamps then left the window describing the request before it.
 	newest := true
@@ -726,32 +726,37 @@ func (s *store) evictSessionsLocked() {
 
 // projectionFor returns the rendered projection of one conversation, reusing
 // the previous render while the conversation has not gained a request.
+//
+// The render happens under the lock: the snapshot pointers are shared, and a
+// concurrent request drops the prompt text of superseded snapshots while the
+// projection is reading them. Rendering outside the lock raced the eviction.
 func (s *store) projectionFor(sessionID string) (projection, bool) {
-	s.mu.RLock()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	snaps := s.bySession[sessionID]
+	if len(snaps) == 0 {
+		return projection{}, false
+	}
+	if cached, ok := s.projections[sessionID]; ok && cached.version == len(snaps) {
+		return cached.value, true
+	}
+
 	events := make([]event, 0, 32)
 	for i := len(s.events) - 1; i >= 0 && len(events) < 500; i-- {
 		if s.events[i].SessionID == sessionID {
 			events = append(events, s.events[i])
 		}
 	}
-	cached, ok := s.projections[sessionID]
-	s.mu.RUnlock()
-	if len(snaps) == 0 {
-		return projection{}, false
-	}
-	if ok && cached.version == len(snaps) {
-		return cached.value, true
-	}
 	for i, j := 0, len(events)-1; i < j; i, j = i+1, j-1 {
 		events[i], events[j] = events[j], events[i]
 	}
+
 	value := buildProjection(sessionID, snaps, events)
 	if s.prices != nil {
 		newest := snaps[len(snaps)-1]
 		applyCost(&value, s.prices, newest)
 	}
-	s.mu.Lock()
 	if len(s.projections) >= s.projectionCap {
 		for key := range s.projections {
 			delete(s.projections, key)
@@ -759,13 +764,16 @@ func (s *store) projectionFor(sessionID string) (projection, bool) {
 		}
 	}
 	s.projections[sessionID] = &cachedProjection{version: len(snaps), value: value}
-	s.mu.Unlock()
 	return value, true
 }
 
 // snapshotsFor returns the finished snapshots of one conversation, oldest
 // first. The dashboard renders one projection per conversation, and a
 // projection needs the parsed prompt of every request, not only the newest.
+//
+// The elements are shared pointers, and a request that arrives drops the prompt
+// text of the snapshots it supersedes. A caller that walks Items therefore runs
+// inside withSnapshots, not on the slice this returns.
 func (s *store) snapshotsFor(sessionID string) []*snapshot {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -774,6 +782,42 @@ func (s *store) snapshotsFor(sessionID string) []*snapshot {
 		return nil
 	}
 	return append([]*snapshot(nil), indexed...)
+}
+
+// withSnapshots runs read over the snapshots of one conversation while the
+// store lock is held, so nothing rewrites the prompt text underneath it. It
+// reports false when the conversation has no snapshots.
+func (s *store) withSnapshots(sessionID string, read func([]*snapshot)) bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	indexed := s.bySession[sessionID]
+	if len(indexed) == 0 {
+		return false
+	}
+	read(indexed)
+	return true
+}
+
+// renderSession builds the projection of one conversation under the lock. It is
+// the read side of /session: the render walks the raw items, and a concurrent
+// usage record clears those items of every superseded snapshot.
+func (s *store) renderSession(sessionID string) (projection, []event, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	indexed := s.bySession[sessionID]
+	if len(indexed) == 0 {
+		return projection{}, nil, false
+	}
+	events := make([]event, 0, 32)
+	for i := len(s.events) - 1; i >= 0 && len(events) < 500; i-- {
+		if s.events[i].SessionID == sessionID {
+			events = append(events, s.events[i])
+		}
+	}
+	for i, j := 0, len(events)-1; i < j; i, j = i+1, j-1 {
+		events[i], events[j] = events[j], events[i]
+	}
+	return buildProjection(sessionID, indexed, events), events, true
 }
 
 // snapshotSessions copies the aggregate of every conversation for a caller that

@@ -111,11 +111,13 @@ func (h managementHandler) HandleManagement(_ context.Context, req pluginapi.Man
 				id = strings.TrimSpace(req.Query.Get("session"))
 			}
 		}
-		snaps := h.plugin.store.snapshotsFor(id)
-		if len(snaps) == 0 {
+		// The render walks the raw prompt items, which the next request rewrites:
+		// it runs under the store lock instead of on a copied slice.
+		built, _, ok := h.plugin.store.renderSession(id)
+		if !ok {
 			return jsonResponse(map[string]any{"error": "session not found", "id": id}), nil
 		}
-		return jsonResponse(buildProjection(id, snaps, h.plugin.store.snapshotEvents(id, 500))), nil
+		return jsonResponse(built), nil
 	case strings.HasSuffix(path, "/events"):
 		limit := 500
 		sessionID := ""

@@ -104,30 +104,46 @@ func (p *plugin) fleetAnswer(raw []byte) any {
 // fleetMember renders one agent's own record: who it is, what it was asked, and
 // the delegations its prompt shows.
 func (p *plugin) fleetMember(sessionID string, history bool) (map[string]any, bool) {
-	snaps := p.store.snapshotsFor(sessionID)
-	if len(snaps) == 0 {
-		return nil, false
-	}
-	newest := snaps[len(snaps)-1]
+	// The delegation list comes from the prompt items, which the next request
+	// of this conversation clears. Read them under the lock and keep only what
+	// the answer needs, so nothing is touched after the lock is released.
 	delegations := make([]map[string]any, 0)
-	seen := map[string]bool{}
-	seq := 0
-	for _, it := range newest.Items {
-		if it.Category != CatToolCall || !isAgentTool(it.Tool) {
-			continue
+	var (
+		title    string
+		model    string
+		provider string
+		reply    string
+		replyAt  time.Time
+		count    int
+	)
+	ok := p.store.withSnapshots(sessionID, func(snaps []*snapshot) {
+		count = len(snaps)
+		newest := snaps[len(snaps)-1]
+		title, model, provider = newest.Title, newest.Model, newest.Provider
+		seen := map[string]bool{}
+		for _, it := range newest.Items {
+			if it.Category != CatToolCall || !isAgentTool(it.Tool) {
+				continue
+			}
+			target := firstNonEmpty(it.Target, it.Label)
+			if target == "" || seen[target] {
+				continue
+			}
+			seen[target] = true
+			delegations = append(delegations, map[string]any{
+				"seq":  len(delegations) + 1,
+				"time": millis(newest.StartedAt),
+				"to":   target,
+				"mode": "unknown",
+			})
 		}
-		target := firstNonEmpty(it.Target, it.Label)
-		if target == "" || seen[target] {
-			continue
+		if len(snaps) > 1 {
+			previous := snaps[len(snaps)-2]
+			reply, replyAt = previous.Title, previous.CompletedAt
 		}
-		seen[target] = true
-		seq++
-		delegations = append(delegations, map[string]any{
-			"seq":  seq,
-			"time": millis(newest.StartedAt),
-			"to":   target,
-			"mode": "unknown",
-		})
+	})
+	if !ok {
+		return nil, false
 	}
 
 	out := map[string]any{
@@ -135,23 +151,20 @@ func (p *plugin) fleetMember(sessionID string, history bool) (map[string]any, bo
 		"delegations": delegations,
 		"truncated":   false,
 	}
-	if newest.Title != "" {
-		out["initialPrompt"] = newest.Title
+	if title != "" {
+		out["initialPrompt"] = title
 	}
-	if newest.Model != "" {
+	if model != "" {
 		out["descriptor"] = map[string]any{
 			"mode":       "continuable",
-			"agentModel": newest.Model,
-			"provider":   newest.Provider,
+			"agentModel": model,
+			"provider":   provider,
 		}
 	}
-	if len(snaps) > 1 {
-		previous := snaps[len(snaps)-2]
-		if previous.Title != "" {
-			out["lastReply"] = map[string]any{
-				"time": millis(previous.CompletedAt),
-				"text": previous.Title,
-			}
+	if count > 1 && reply != "" {
+		out["lastReply"] = map[string]any{
+			"time": millis(replyAt),
+			"text": reply,
 		}
 	}
 	_ = history
