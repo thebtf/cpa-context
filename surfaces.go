@@ -304,6 +304,34 @@ func (p *plugin) overviewSummary(sessions []*session, days int) map[string]any {
 			wallMs += sess.LastSeen.Sub(sess.FirstSeen).Milliseconds()
 		}
 	}
+	// Cost is summed from the same catalog the session cards use, and reported as
+	// unknown when no session could be priced.
+	var costTotal float64
+	priced := 0
+	for _, sess := range sessions {
+		if p.store.prices == nil {
+			break
+		}
+		snaps := p.store.snapshotsFor(sess.ID)
+		if len(snaps) == 0 {
+			continue
+		}
+		newest := snaps[len(snaps)-1]
+		provider := newest.Provider
+		if provider == "" {
+			provider = "unknown"
+		}
+		if price := p.store.prices.costOf(provider, newest.Model,
+			newest.UncachedTokens, newest.CacheReadTokens, newest.CacheWriteTokens,
+			newest.OutputTokens+newest.ReasoningTokens); price != nil {
+			costTotal += *price
+			priced++
+		}
+	}
+	var costValue any
+	if priced > 0 {
+		costValue = costTotal
+	}
 	summary := map[string]any{
 		"sessions":         len(sessions),
 		"sessionsTotal":    len(sessions),
@@ -311,8 +339,8 @@ func (p *plugin) overviewSummary(sessions []*session, days int) map[string]any {
 		"archivedScoped":   0,
 		"tokens":           tokens,
 		"turns":            turns,
-		"costUsd":          nil,
-		"costSessions":     0,
+		"costUsd":          costValue,
+		"costSessions":     priced,
 		"usageSessions":    len(sessions),
 		"cacheHit":         cacheHitOf(hits, misses),
 		"tokenParts":       parts,

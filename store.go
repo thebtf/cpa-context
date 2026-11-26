@@ -181,6 +181,9 @@ type store struct {
 	// is its request count, which only grows.
 	projections   map[string]*cachedProjection
 	projectionCap int
+	// prices is the catalog used to estimate cost. It may be nil, in which case
+	// a session reports no price.
+	prices *priceCatalog
 }
 
 type cachedProjection struct {
@@ -701,6 +704,10 @@ func (s *store) projectionFor(sessionID string) (projection, bool) {
 		events[i], events[j] = events[j], events[i]
 	}
 	value := buildProjection(sessionID, snaps, events)
+	if s.prices != nil {
+		newest := snaps[len(snaps)-1]
+		applyCost(&value, s.prices, newest)
+	}
 	s.mu.Lock()
 	if len(s.projections) >= s.projectionCap {
 		for key := range s.projections {

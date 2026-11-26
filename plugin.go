@@ -186,6 +186,11 @@ func (p *plugin) configure(raw []byte) *rpcError {
 	p.mu.Unlock()
 	if next.DataDir != "" {
 		p.attachJournal(filepath.Join(next.DataDir, stateFileName))
+		if p.store.prices == nil {
+			catalog := newPriceCatalog(next.DataDir)
+			p.store.prices = catalog
+			catalog.start()
+		}
 	}
 	return nil
 }

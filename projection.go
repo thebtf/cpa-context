@@ -73,6 +73,10 @@ type timelineProjection struct {
 	Last         *timelineLast   `json:"last,omitempty"`
 	DetailRev    int             `json:"detailRev,omitempty"`
 	MaxOutput    int64           `json:"maxOutputTokens,omitempty"`
+	// Cost carries the estimated price of this session. It is absent when the
+	// model is not in the price catalog, which the card renders as unpriced.
+	Cost     map[string]any `json:"cost,omitempty"`
+	CostRead map[string]any `json:"costRead,omitempty"`
 }
 
 type timelineCounts struct {
