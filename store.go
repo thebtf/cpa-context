@@ -494,11 +494,10 @@ func (s *store) applyToSessionLocked(snap *snapshot) {
 		sess.Timeline = sess.Timeline[len(sess.Timeline)-s.limits.maxTimeline:]
 	}
 
-	// The newest request defines the current window and the expanded browser.
+		// The request observed last defines the current window. Arrival order, not the
+	// timestamp: a retry or a clock that stepped can carry an earlier stamp, and
+	// comparing stamps then left the window describing the request before it.
 	newest := true
-	if len(sess.Timeline) > 1 && snap.StartedAt.Before(sess.Timeline[len(sess.Timeline)-2].At) {
-		newest = false
-	}
 	if newest {
 		sess.LastContext = snap.InputTokens
 		sess.Composition = snap.Composition

@@ -51,9 +51,12 @@ func (p *plugin) detailBody(sessionID string) any {
 		return clientError("session not found")
 	}
 	timeline := built.ContextTimeline
+	// The nodes travel once, at the top level. Repeating them inside the head
+	// doubles the payload for a field the client reads from this record.
+	head := slimHead(timeline)
 	body := map[string]any{
 		"rev":      timeline.DetailRev,
-		"head":     timeline,
+		"head":     head,
 		"requests": seriesWithChart(timeline.Requests),
 		"events":   timeline.Events,
 		"fileOps":  timeline.FileOps,

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"strconv"
 	"encoding/json"
 	"sort"
 	"time"
@@ -554,29 +555,18 @@ func (p *plugin) overviewProjects(sessions []*session) []map[string]any {
 	return out
 }
 
+// formatPercent renders a rate the way the card expects: one decimal place and
+// no sign, because the card appends its own. The standard formatter handles the
+// rounding and the float representation, which a hand-rolled version got wrong at
+// the boundaries (99.96 printed as "99.95").
 func formatPercent(value float64) string {
-	whole := int(value)
-	fraction := int((value - float64(whole)) * 100)
-	return itoa(whole) + "." + pad2(fraction)
-}
-
-func itoa(value int) string {
-	if value == 0 {
-		return "0"
+	if value < 0 {
+		value = 0
 	}
-	digits := make([]byte, 0, 8)
-	for value > 0 {
-		digits = append([]byte{byte('0' + value%10)}, digits...)
-		value /= 10
+	if value > 100 {
+		value = 100
 	}
-	return string(digits)
-}
-
-func pad2(value int) string {
-	if value < 10 {
-		return "0" + itoa(value)
-	}
-	return itoa(value)
+	return strconv.FormatFloat(value, 'f', 2, 64)
 }
 
 // skillList reports the skill names the traffic mentions.
