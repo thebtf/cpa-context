@@ -51,7 +51,13 @@ file activity its paths and line deltas and the command panel its programs.
 
 Download the archive for the host's platform from
 [Releases](https://github.com/thebtf/cpa-context/releases) and extract it into
-CPA's plugin directory. Keep the file name: CPA derives the plugin id from it.
+CPA's plugin directory.
+
+The archive holds one file named `cpa-context-v<version><ext>`. Keep that name:
+CPA reads the plugin id and the plugin version from it, stripping `-v<version>`
+and taking the remainder as the id. A file named `cpa-context.so` still loads,
+but the host cannot report a version for it, and a store install into
+`plugins/<goos>/<goarch>/` writes the versioned name for the same reason.
 
 Then enable it:
 
@@ -140,6 +146,8 @@ go build -buildmode=c-shared -o cpa-context.dll .
 node test/smoke.mjs  path/to/cli-proxy-api path/to/cpa-context.dll   # composition sums to the billed prompt
 node test/restart.mjs path/to/cli-proxy-api path/to/cpa-context.dll  # history survives a restart
 node test/load.mjs   path/to/cli-proxy-api path/to/cpa-context.dll  # resident memory and CPU under load
+node test/versioned.mjs path/to/cli-proxy-api path/to/cpa-context.dll cpa-context-v0.0.0.dll  # the host resolves id and version from a versioned name
+node test/concurrent.mjs path/to/cli-proxy-api path/to/cpa-context.dll  # every request accounted for under parallel load
 ```
 
 No provider accounts and no installed profile are used.
@@ -149,4 +157,6 @@ No provider accounts and no installed profile are used.
 `.github/workflows/build.yml` builds the dashboard, then the plugin, for Windows
 amd64, Linux amd64 and macOS arm64, downloads the pinned CLIProxyAPI release,
 verifies its archive checksum, and runs the smoke test against that exact binary
-before packaging. Pushing a tag publishes three archives and a `checksums.txt`.
+before packaging. The library is packed as `cpa-context-v<version><ext>`, because
+that is the name the host reads the id and the version from. Pushing a tag
+publishes three archives and a `checksums.txt`.
