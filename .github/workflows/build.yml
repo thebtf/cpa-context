@@ -139,9 +139,19 @@ jobs:
           if [[ "$GITHUB_REF_TYPE" != "tag" ]]; then
             version="0.0.0-dev"
           fi
-          mkdir -p dist
-          python3 -m zipfile -c \
-            "dist/cpa-context_${version}_${OS}_${ARCH}.zip" "cpa-context.$EXT"
+          # CPA reads the plugin id and version from the library file name: it
+          # strips "-v<version>" and takes the rest as the id. Shipping the plain
+          # name leaves the version unknown to the host, so every other plugin in
+          # the directory shows one and this one does not.
+          #
+          # CPA also requires the library at the archive root, so the zip is
+          # built from inside the staging directory rather than from its parent.
+          mkdir -p dist stage
+          cp "cpa-context.$EXT" "stage/cpa-context-v${version}.${EXT}"
+          ( cd stage && python3 -m zipfile -c \
+              "../dist/cpa-context_${version}_${OS}_${ARCH}.zip" \
+              "cpa-context-v${version}.${EXT}" )
+          python3 -m zipfile -l "dist/cpa-context_${version}_${OS}_${ARCH}.zip"
 
       - uses: actions/upload-artifact@v4
         with:
