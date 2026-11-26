@@ -325,21 +325,22 @@ func (p *plugin) overviewSummary(sessions []*session, days int) map[string]any {
 		if p.store.prices == nil {
 			break
 		}
-		snaps := p.store.snapshotsFor(sess.ID)
-		if len(snaps) == 0 {
-			continue
-		}
-		newest := snaps[len(snaps)-1]
-		provider := newest.Provider
-		if provider == "" {
-			provider = "unknown"
-		}
-		if price := p.store.prices.costOf(provider, newest.Model,
-			newest.UncachedTokens, newest.CacheReadTokens, newest.CacheWriteTokens,
-			newest.OutputTokens+newest.ReasoningTokens); price != nil {
-			costTotal += *price
-			priced++
-		}
+		catalog := p.store.prices
+		// Only scalars are needed, and they are read under the lock for the same
+		// reason the prompt text is: this loop runs while requests arrive.
+		p.store.withSnapshots(sess.ID, func(snaps []*snapshot) {
+			newest := snaps[len(snaps)-1]
+			provider := newest.Provider
+			if provider == "" {
+				provider = "unknown"
+			}
+			if price := catalog.costOf(provider, newest.Model,
+				newest.UncachedTokens, newest.CacheReadTokens, newest.CacheWriteTokens,
+				newest.OutputTokens+newest.ReasoningTokens); price != nil {
+				costTotal += *price
+				priced++
+			}
+		})
 	}
 	var costValue any
 	if priced > 0 {
@@ -493,35 +494,33 @@ func (p *plugin) overviewTally(field string) map[string]any {
 	tally := map[string]int{}
 	lastSeen := map[string]time.Time{}
 	for _, sess := range p.store.snapshotSessions() {
-		snaps := p.store.snapshotsFor(sess.ID)
-		if len(snaps) == 0 {
-			continue
-		}
-		newest := snaps[len(snaps)-1]
-		for _, it := range newest.Items {
-			var name string
-			switch field {
-			case "cmds":
-				if it.Category == CatToolCall && isCommandTool(it.Tool) {
-					name = firstWord(it.Target)
+		p.store.withSnapshots(sess.ID, func(snaps []*snapshot) {
+			newest := snaps[len(snaps)-1]
+			for _, it := range newest.Items {
+				var name string
+				switch field {
+				case "cmds":
+					if it.Category == CatToolCall && isCommandTool(it.Tool) {
+						name = firstWord(it.Target)
+					}
+				case "skills":
+					if it.Category == CatInjected && it.Label != "" {
+						name = it.Label
+					}
+				default:
+					if it.Category == CatToolCall {
+						name = it.Tool
+					}
 				}
-			case "skills":
-				if it.Category == CatInjected && it.Label != "" {
-					name = it.Label
+				if name == "" {
+					continue
 				}
-			default:
-				if it.Category == CatToolCall {
-					name = it.Tool
+				tally[name]++
+				if newest.StartedAt.After(lastSeen[name]) {
+					lastSeen[name] = newest.StartedAt
 				}
 			}
-			if name == "" {
-				continue
-			}
-			tally[name]++
-			if newest.StartedAt.After(lastSeen[name]) {
-				lastSeen[name] = newest.StartedAt
-			}
-		}
+		})
 	}
 	stats := make([]map[string]any, 0, len(tally))
 	for name, count := range tally {
@@ -592,21 +591,19 @@ func (p *plugin) skillList() []map[string]any {
 	seen := map[string]bool{}
 	out := make([]map[string]any, 0)
 	for _, sess := range p.store.snapshotSessions() {
-		snaps := p.store.snapshotsFor(sess.ID)
-		if len(snaps) == 0 {
-			continue
-		}
-		for _, it := range snaps[len(snaps)-1].Items {
-			if it.Category != CatInjected || it.Label == "" || seen[it.Label] {
-				continue
+		p.store.withSnapshots(sess.ID, func(snaps []*snapshot) {
+			for _, it := range snaps[len(snaps)-1].Items {
+				if it.Category != CatInjected || it.Label == "" || seen[it.Label] {
+					continue
+				}
+				seen[it.Label] = true
+				out = append(out, map[string]any{
+					"name":        it.Label,
+					"description": "observed in traffic",
+					"source":      "cpa-context",
+				})
 			}
-			seen[it.Label] = true
-			out = append(out, map[string]any{
-				"name":        it.Label,
-				"description": "observed in traffic",
-				"source":      "cpa-context",
-			})
-		}
+		})
 	}
 	return out
 }

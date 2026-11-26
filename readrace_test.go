@@ -77,6 +77,12 @@ func TestReadsRaceWithTraffic(t *testing.T) {
 					}
 					_ = p.store.snapshotSession(id)
 					_, _ = json.Marshal(p.overviewAnswer([]byte(`{"part":"summary"}`)))
+					// The tally and skill readers walk prompt items of every
+					// conversation, not just one.
+					_, _ = json.Marshal(p.overviewAnswer([]byte(`{"part":"tally","field":"cmds"}`)))
+					_, _ = json.Marshal(p.overviewAnswer([]byte(`{"part":"tally","field":"skills"}`)))
+					_, _ = json.Marshal(p.overviewAnswer([]byte(`{"part":"tally","field":"tools"}`)))
+					_ = p.skillList()
 					_, _ = json.Marshal(p.fleetAnswer([]byte(`{"part":"member","session":"` + id + `","history":true}`)))
 					_, _ = p.store.projectionFor(id)
 					// The route the browser calls, which walks raw prompt items.
