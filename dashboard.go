@@ -15,6 +15,31 @@ var dashboardJS string
 //go:embed web/dist/dashboard.css
 var dashboardCSS string
 
+// Asset paths under /v0/resource/plugins/cpa-context/. The page references them
+// rather than inlining, so a browser caches six megabytes once instead of
+// receiving them again on every reload.
+const (
+	assetScript = "/assets/dashboard.js"
+	assetStyles = "/assets/dashboard.css"
+)
+
+// assetPrefix is where the host mounts this plugin's browser resources. A
+// relative reference resolves against the host root, so the page links to the
+// absolute path.
+const assetPrefix = "/v0/resource/plugins/" + pluginID
+
+// assetFor returns the bytes and content type for an asset path, and whether it
+// is one of ours.
+func assetFor(path string) (string, string, bool) {
+	switch {
+	case strings.HasSuffix(path, assetScript):
+		return dashboardJS, "text/javascript; charset=utf-8", true
+	case strings.HasSuffix(path, assetStyles):
+		return dashboardCSS, "text/css; charset=utf-8", true
+	}
+	return "", "", false
+}
+
 // dashboardHTML returns the page that mounts the built client. The management
 // key field and the refresh button live at the bottom of the sidebar, because
 // the top-right corner of a browser is covered by extension and profile
@@ -27,6 +52,7 @@ func dashboardHTML() string {
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>CPA context</title>
+<link rel="stylesheet" href="` + assetPrefix + assetStyles + `">
 <style>
 html, body { height: 100%; margin: 0; background: #0d1017; }
 #shell { display: flex; flex-direction: column; height: 100%; }
@@ -42,24 +68,19 @@ html, body { height: 100%; margin: 0; background: #0d1017; }
 #bar button:hover { background: #2a3242; }
 #root { flex: 1; min-height: 0; }
 </style>
-<style>`)
-	page.WriteString(dashboardCSS)
-	page.WriteString(`</style>
 </head>
 <body>
 <div id="shell">
   <div id="bar">
     <strong style="color:#e6e9ef">CPA context</strong>
-    <span>requests observed by this plugin since the proxy started</span>
+    <span>requests observed by this plugin</span>
     <span class="grow"></span>
     <input id="key" type="password" placeholder="management key" autocomplete="off">
     <button id="refresh">Refresh</button>
   </div>
   <div id="root"></div>
 </div>
-<script type="module">`)
-	page.WriteString(dashboardJS)
-	page.WriteString(`</script>
+<script type="module" src="` + assetPrefix + assetScript + `"></script>
 </body>
 </html>
 `)

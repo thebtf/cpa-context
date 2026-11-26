@@ -60,6 +60,13 @@ func TestRegisteredRoutesResolve(t *testing.T) {
 		{http.MethodPost, clientBalancePath, ""},
 		{http.MethodPost, clientSkillsPath, ""},
 	}
+
+	// The page's own assets are resources, served to the browser without a key.
+	for _, asset := range []string{assetScript, assetStyles} {
+		if !resources[asset] {
+			t.Errorf("asset %s is not registered, so the page would load nothing", asset)
+		}
+	}
 	for _, probe := range probes {
 		if !registered[probe.method+" "+probe.path] {
 			t.Errorf("%s %s is not registered, so the host would answer 404", probe.method, probe.path)
@@ -125,7 +132,16 @@ func TestDashboardEmbedsTheClient(t *testing.T) {
 			t.Errorf("the dashboard page is missing %q", want)
 		}
 	}
-	if len(page) < 100_000 {
-		t.Errorf("the dashboard page is %d bytes, the client bundle looks missing", len(page))
+	if len(page) > 32_000 {
+		t.Errorf("the dashboard page is %d bytes, the assets are probably inlined again", len(page))
+	}
+	for _, asset := range []string{assetScript, assetStyles} {
+		body, contentType, ok := assetFor(asset)
+		if !ok || len(body) < 1000 {
+			t.Errorf("asset %s is empty or missing", asset)
+		}
+		if contentType == "" {
+			t.Errorf("asset %s has no content type", asset)
+		}
 	}
 }

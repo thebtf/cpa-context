@@ -46,6 +46,8 @@ func (p *plugin) registerManagement() pluginapi.ManagementRegistrationResponse {
 		},
 		Resources: []pluginapi.ResourceRoute{
 			{Path: pathDashboard, Menu: "Context", Description: "Context composition dashboard"},
+			{Path: assetScript, Description: "Dashboard client script"},
+			{Path: assetStyles, Description: "Dashboard client styles"},
 		},
 	}
 }
@@ -77,6 +79,15 @@ func (h managementHandler) HandleManagement(_ context.Context, req pluginapi.Man
 	}
 	if strings.HasSuffix(path, pathDashboard) || strings.HasSuffix(req.Path, pathDashboard) {
 		return htmlResponse(dashboardHTML()), nil
+	}
+	// The client's script and styles are resources of their own, so the browser
+	// caches them instead of receiving them inside the page on every load.
+	if body, contentType, ok := assetFor(req.Path); ok {
+		return pluginapi.ManagementResponse{
+			StatusCode: http.StatusOK,
+			Headers:    http.Header{"Content-Type": []string{contentType}, "Cache-Control": []string{"public, max-age=86400"}},
+			Body:       []byte(body),
+		}, nil
 	}
 	// The ported client asks for detail through its own POST routes. The body
 	// arrives as the raw request bytes; the frame carries it base64-encoded, so
