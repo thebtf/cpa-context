@@ -18,9 +18,13 @@ var dashboardCSS string
 // Asset paths under /v0/resource/plugins/cpa-context/. The page references them
 // rather than inlining, so a browser caches six megabytes once instead of
 // receiving them again on every reload.
+//
+// The plugin version is part of the path because that cache is long-lived:
+// without it a browser would keep serving the previous build for a day after an
+// upgrade, which looks like a broken dashboard.
 const (
-	assetScript = "/assets/dashboard.js"
-	assetStyles = "/assets/dashboard.css"
+	assetScript = "/assets/dashboard-" + pluginVersion + ".js"
+	assetStyles = "/assets/dashboard-" + pluginVersion + ".css"
 )
 
 // assetPrefix is where the host mounts this plugin's browser resources. A

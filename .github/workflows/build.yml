@@ -68,6 +68,19 @@ jobs:
           npm run build
           ls -la dist
 
+      # The plugin reports its own version to the host and uses it in the asset
+      # paths, so a tag that disagrees with the constant ships a build that claims
+      # to be something else and never invalidates a cached page.
+      - name: Version matches the tag
+        if: github.ref_type == 'tag'
+        shell: bash
+        run: |
+          set -euo pipefail
+          want="${GITHUB_REF_NAME#v}"
+          got="$(sed -n 's/.*pluginVersion = "\(.*\)".*/\1/p' plugin.go)"
+          echo "tag=$want code=$got"
+          test "$want" = "$got" || { echo "plugin.go says $got, the tag says $want"; exit 1; }
+
       - name: Test
         shell: bash
         run: go test ./...
