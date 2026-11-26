@@ -114,8 +114,9 @@ All routes require the management key.
   so the dashboard shows the observed prompt size and the client's output cap,
   never a percentage of a window it cannot see.
 - **One step's own nodes are not kept.** The projection describes the newest
-  prompt, so comparing an arbitrary step answers with the head rather than a
-  fabricated difference.
+  prompt, so comparing an arbitrary step answers with a refusal rather than a
+  fabricated difference; the client then falls back to its own local comparison
+  and labels it as one.
 - **Unrecognized formats are reported as such** rather than given an invented
   split.
 
@@ -147,6 +148,7 @@ node test/smoke.mjs  path/to/cli-proxy-api path/to/cpa-context.dll   # compositi
 node test/restart.mjs path/to/cli-proxy-api path/to/cpa-context.dll  # history survives a restart
 node test/load.mjs   path/to/cli-proxy-api path/to/cpa-context.dll  # resident memory and CPU under load
 node test/versioned.mjs path/to/cli-proxy-api path/to/cpa-context.dll cpa-context-v0.0.0.dll  # the host resolves id and version from a versioned name
+node test/panels.mjs path/to/cli-proxy-api path/to/cpa-context.dll  # titles, the fleet roster and readable header content
 node test/concurrent.mjs path/to/cli-proxy-api path/to/cpa-context.dll  # every request accounted for under parallel load
 ```
 
