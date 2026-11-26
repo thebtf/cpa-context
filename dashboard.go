@@ -26,8 +26,20 @@ const dashboardPage = `<!doctype html>
     align-items: baseline; gap: 16px; flex-wrap: wrap; }
   h1 { font-size: 15px; margin: 0; font-weight: 600; letter-spacing: .01em; }
   .note { color: var(--dim); font-size: 12px; }
+  .headline { font-size: 12px; font-variant-numeric: tabular-nums;
+    display: flex; gap: 14px; align-items: baseline; }
+  .headline b { font-size: 14px; font-weight: 600; }
+  .headline .sep { color: var(--line); }
   main { display: grid; grid-template-columns: minmax(260px, 340px) 1fr; height: calc(100vh - 57px); }
-  #list { border-right: 1px solid var(--line); overflow-y: auto; }
+  #side { display: flex; flex-direction: column; border-right: 1px solid var(--line);
+    min-height: 0; }
+  #list { flex: 1; overflow-y: auto; }
+  #controls { display: flex; gap: 8px; padding: 10px 12px;
+    border-top: 1px solid var(--line); background: var(--panel); }
+  #controls input { flex: 1; min-width: 0; background: #10131a;
+    border: 1px solid var(--line); border-radius: 5px; padding: 5px 8px;
+    color: var(--text); font-size: 12px; }
+  #controls input:focus { outline: 1px solid var(--user); }
   .card { padding: 10px 14px; border-bottom: 1px solid var(--line); cursor: pointer; }
   .card:hover { background: #1b1f27; }
   .card[aria-selected="true"] { background: #1f2531; box-shadow: inset 2px 0 0 var(--user); }
@@ -41,6 +53,12 @@ const dashboardPage = `<!doctype html>
   .kpi .v { font-size: 20px; font-weight: 600; font-variant-numeric: tabular-nums; }
   .kpi .k { color: var(--dim); font-size: 11px; text-transform: uppercase;
     letter-spacing: .06em; }
+  .kpi-cache { padding-right: 18px; border-right: 1px solid var(--line); }
+  .kpi-cache .sub { font-size: 11px; color: var(--dim); margin-top: 2px;
+    font-variant-numeric: tabular-nums; }
+  .kpi-cache .v.good, .good { color: #4bd69a; }
+  .kpi-cache .v.warn, .warn { color: #d6a94b; }
+  .kpi-cache .v.bad, .bad { color: #d6607c; }
   .bar { display: flex; height: 10px; border-radius: 5px; overflow: hidden;
     background: #10131a; }
   .bar span { display: block; height: 100%; }
@@ -85,13 +103,18 @@ const dashboardPage = `<!doctype html>
   <h1>CPA context</h1>
   <span class="note" id="scope"></span>
   <span style="flex:1"></span>
-  <input id="key" type="password" placeholder="management key" autocomplete="off"
-    style="background:#10131a;border:1px solid var(--line);border-radius:5px;
-    padding:4px 8px;color:var(--text);font-size:12px;width:170px">
-  <button id="refresh">Refresh</button>
+  <span id="headline" class="headline"></span>
 </header>
 <main>
-  <div id="list"><div class="empty">Loading…</div></div>
+  <div id="side">
+    <div id="list"><div class="empty">Loading…</div></div>
+    <!-- Kept at the bottom of the sidebar: the top-right corner of a browser is
+         where extension and profile controls sit, and they cover anything there. -->
+    <div id="controls">
+      <input id="key" type="password" placeholder="management key" autocomplete="off">
+      <button id="refresh">Refresh</button>
+    </div>
+  </div>
   <div id="detail"><div class="empty">Select a conversation</div></div>
 </main>
 <script>
@@ -134,8 +157,22 @@ function bar(composition, total) {
 }
 
 function title(s) {
+  if (s.title) return s.title;
   if (s.project) return s.project;
   return String(s.id || "").replace(/^header:/, "");
+}
+
+// duration is how long the conversation has been alive: first request to last.
+function duration(s) {
+  if (!s.firstSeen || !s.lastSeen) return "";
+  const ms = new Date(s.lastSeen) - new Date(s.firstSeen);
+  if (!(ms > 0)) return "0s";
+  const seconds = Math.round(ms / 1000);
+  if (seconds < 60) return seconds + "s";
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return minutes + "m" + (seconds % 60 ? (seconds % 60) + "s" : "");
+  const hours = Math.floor(minutes / 60);
+  return hours + "h" + (minutes % 60 ? (minutes % 60) + "m" : "");
 }
 
 function flatten(node, depth) {
@@ -165,18 +202,27 @@ function renderList() {
   }) : (data.sessions || []).map(s => ({ node: { id: s.id, depth: 0 }, sess: s }));
 
   list.innerHTML = rows.map(({ node, sess }) => {
-    const when = sess.lastSeen ? new Date(sess.lastSeen).toLocaleTimeString() : "";
     const model = (sess.models && sess.models[0]) || "unknown model";
     const child = node.depth > 0;
     const badge = node.isSubagent || child ? "sub" : node.isFork ? "fork" : "";
+    const hits = sess.cacheHitRequests || 0;
+    const misses = sess.cacheMissRequests || 0;
+    const rate = hits + misses ? (100 * hits / (hits + misses)) : 0;
+    const tone = hits + misses === 0 ? "" : rate >= 80 ? "good" : rate >= 40 ? "warn" : "bad";
     return '<div class="card" data-id="' + esc(sess.id) + '"' +
       ' style="padding-left:' + (14 + node.depth * 14) + 'px"' +
       (sess.id === selected ? ' aria-selected="true"' : "") + '>' +
       '<div class="top"><span class="id">' +
       (child ? "&#8627; " : "") + esc(title(sess)) + "</span>" +
       '<span class="meta">' + fmt(sess.lastContextTokens) + "</span></div>" +
-      '<div class="meta">' + esc(model) + " · " + sess.requests + " req · " + esc(when) +
-      (badge ? " · " + badge : "") + "</div>" +
+      '<div class="meta">' + esc(model) + " · " + esc(duration(sess)) + " · " +
+      sess.requests + " req" + (badge ? " · " + badge : "") + "</div>" +
+      '<div class="meta">' +
+      (tone
+        ? '<span class="' + tone + '">' + rate.toFixed(0) + "% hit</span> · " +
+          hits + "/" + (hits + misses) + " cached"
+        : "no cache data") +
+      "</div>" +
       (sess.unsourced ? '<div class="meta">no session header</div>' : "") +
       bar(sess.composition, sess.lastContextTokens) + "</div>";
   }).join("");
@@ -193,12 +239,22 @@ function renderDetail() {
   const used = s.lastContextTokens || 0;
   const events = (data.events || []).filter(e => e.sessionId === s.id).slice(0, 40);
 
+  const hits = s.cacheHitRequests || 0;
+  const misses = s.cacheMissRequests || 0;
+  const totalRead = s.cacheReadTokens || 0;
+  const totalIn = s.inputTokens || 0;
+  // Per-request hit rate is what tells whether the client reuses its prefix.
+  // Token-weighted reuse says how much of the billed prompt came from cache.
+  const hitRate = hits + misses ? (100 * hits / (hits + misses)) : 0;
+  const readShare = totalIn > 0 ? (100 * totalRead / (totalIn + totalRead)) : 0;
+
   let html = '<div class="kpis">' +
+    kpiCache(hitRate, hits, misses) +
+    kpi(readShare.toFixed(1) + "%", "prompt from cache") +
     kpi(fmt(used), "current window") +
     kpi(fmt(s.maxOutputTokens), "output cap") +
     kpi(fmt(s.inputTokens), "prompt tokens") +
     kpi(fmt(s.outputTokens), "completion tokens") +
-    kpi(fmt(s.cacheReadTokens), "cache read") +
     kpi(String(s.requests), "requests") +
     (s.failed ? kpi(String(s.failed), "failed") : "") +
     "</div>";
@@ -284,11 +340,21 @@ function kpi(value, label) {
   return '<div class="kpi"><div class="v">' + value + '</div><div class="k">' + label + "</div></div>";
 }
 
+// kpiCache is the headline: the per-request hit rate, coloured by health, with
+// the raw hit and miss counts underneath so the percentage is never bare.
+function kpiCache(rate, hits, misses) {
+  const tone = rate >= 80 ? "good" : rate >= 40 ? "warn" : "bad";
+  return '<div class="kpi kpi-cache"><div class="v ' + tone + '">' +
+    rate.toFixed(1) + '%</div><div class="k">cache hit rate</div>' +
+    '<div class="sub"><span class="good">' + hits + " hit</span> · " +
+    '<span class="bad">' + misses + " miss</span></div></div>";
+}
+
 function drawChart(s) {
   const canvas = document.getElementById("chart");
   if (!canvas) return;
   const dpr = window.devicePixelRatio || 1;
-  const w = canvas.clientWidth, h = 190;
+  const w = canvas.clientWidth, h = 210;
   canvas.width = w * dpr; canvas.height = h * dpr;
   const ctx = canvas.getContext("2d");
   ctx.scale(dpr, dpr);
@@ -298,25 +364,33 @@ function drawChart(s) {
   if (points.length === 0) return;
   const max = Math.max(...points.map(p => p.input || 0), 1);
   const bw = Math.max(2, Math.min(24, (w - 40) / points.length - 2));
+  const barTop = 10, barBottom = h - 58;
 
   ctx.strokeStyle = "#262b36";
-  ctx.beginPath(); ctx.moveTo(34, 10); ctx.lineTo(34, h - 20); ctx.lineTo(w - 6, h - 20); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(34, barTop); ctx.lineTo(34, barBottom); ctx.lineTo(w - 6, barBottom); ctx.stroke();
 
   ctx.fillStyle = "#8b93a7";
   ctx.font = "10px ui-sans-serif";
-  ctx.fillText(fmt(max), 2, 14);
-  ctx.fillText("0", 22, h - 8);
+  ctx.fillText(fmt(max), 2, barTop + 4);
+  ctx.fillText("0", 22, barBottom + 10);
+
+  // The cache band is a second, independent scale under the bars: a hit is a
+  // filled block, a miss an empty outline, so a run of misses is visible even
+  // when the prompt sizes barely change.
+  const bandTop = barBottom + 16, bandHeight = 16;
+  ctx.fillStyle = "#8b93a7";
+  ctx.fillText("cache", 2, bandTop + 12);
 
   points.forEach((p, i) => {
     const x = 38 + i * ((w - 46) / points.length);
-    const bh = (p.input / max) * (h - 40);
+    const bh = ((p.input || 0) / max) * (barBottom - barTop);
     const base = ctx.fillStyle;
     if (p.composition) {
-      let y = h - 20;
+      let y = barBottom;
       for (const key of Object.keys(COLORS)) {
         const v = p.composition[key] || 0;
         if (!v) continue;
-        const seg = (v / max) * (h - 40);
+        const seg = (v / max) * (barBottom - barTop);
         ctx.fillStyle = COLORS[key];
         ctx.fillRect(x, y - seg, bw, seg);
         y -= seg;
@@ -324,13 +398,29 @@ function drawChart(s) {
       ctx.fillStyle = base;
     } else {
       ctx.fillStyle = p.failed ? "#d6607c" : "#4b9ad6";
-      ctx.fillRect(x, h - 20 - bh, bw, bh);
+      ctx.fillRect(x, barBottom - bh, bw, bh);
     }
+
+    const hit = (p.cacheRead || 0) > 0;
+    if (hit) {
+      ctx.fillStyle = "#4bd69a";
+      ctx.fillRect(x, bandTop, bw, bandHeight);
+    } else {
+      ctx.strokeStyle = "#d6607c";
+      ctx.lineWidth = 1;
+      ctx.strokeRect(x + 0.5, bandTop + 0.5, Math.max(bw - 1, 1), bandHeight - 1);
+      ctx.lineWidth = 1;
+    }
+
     if (p.compaction) {
       ctx.fillStyle = "#b07cd6";
-      ctx.fillRect(x, 12, bw, 4);
+      ctx.fillRect(x, barTop - 6, bw, 4);
     }
   });
+
+  ctx.fillStyle = "#8b93a7";
+  ctx.font = "10px ui-sans-serif";
+  ctx.fillText("hits", 34, h - 6);
 }
 
 const KEY_STORE = "cpa-context-management-key";
@@ -364,8 +454,30 @@ async function load() {
   }
   data = await res.json();
   document.getElementById("scope").textContent = data.limits ? data.limits.scope : "";
+  renderHeadline(data.totals || {});
   if (!selected && data.sessions && data.sessions.length) selected = data.sessions[0].id;
   renderList(); renderDetail();
+}
+
+// renderHeadline puts the numbers an operator watches continuously above the
+// fold: the fleet cache hit rate, how much of the billed prompt it saved, and
+// the size of the largest conversation.
+function renderHeadline(t) {
+  const el = document.getElementById("headline");
+  const hits = t.cacheHitRequests || 0;
+  const misses = t.cacheMissRequests || 0;
+  const rate = hits + misses ? (100 * hits / (hits + misses)) : 0;
+  const tone = hits + misses === 0 ? "" : rate >= 80 ? "good" : rate >= 40 ? "warn" : "bad";
+  const billed = (t.inputTokens || 0) + (t.cacheReadTokens || 0);
+  const saved = billed > 0 ? (100 * (t.cacheReadTokens || 0) / billed) : 0;
+  el.innerHTML =
+    '<span>cache <b class="' + tone + '">' + rate.toFixed(1) + "%</b></span>" +
+    '<span class="sep">|</span>' +
+    "<span>" + hits + " hit / " + misses + " miss</span>" +
+    '<span class="sep">|</span>' +
+    "<span>" + saved.toFixed(1) + "% of prompt from cache</span>" +
+    '<span class="sep">|</span>' +
+    "<span>" + (t.sessions || 0) + " conversations, " + (t.requests || 0) + " requests</span>";
 }
 
 document.getElementById("refresh").onclick = load;

@@ -529,3 +529,78 @@ func TestCompletedRequestStillWaitsForUsage(t *testing.T) {
 		t.Fatalf("last context = %d, want 500", sessions[0].LastContext)
 	}
 }
+
+func TestTitleFromFirstUserMessage(t *testing.T) {
+	cases := []struct{ name, input, want string }{
+		{"plain", "Fix the login redirect", "Fix the login redirect"},
+		{"four paragraphs", "Investigate the crash on startup.\n\nIt happens only on Windows.\n\nSecond paragraph here.\n\nThird one.", "Investigate the crash on startup."},
+		{"heading marker", "## Plan\nThen do it", "Plan"},
+		{"list item", "- Refactor the parser", "Refactor the parser"},
+		{"fenced code first", "```go\nfunc main() {}\n```\nExplain this", "Explain this"},
+		{"blank first paragraph", "\n\nActual text", "Actual text"},
+		{"only code", "```\ncode\n```", ""},
+	}
+	for _, tc := range cases {
+		if got := titleFromText(tc.input); got != tc.want {
+			t.Errorf("%s: titleFromText = %q, want %q", tc.name, got, tc.want)
+		}
+	}
+}
+
+func TestLongTitleStopsAtSentenceOrWord(t *testing.T) {
+	long := "This is a very long first line that keeps going well past the limit of the header, and then it ends. Second sentence."
+	got := titleFromText(long)
+	if n := len([]rune(got)); n > maxTitleRunes+40 {
+		t.Fatalf("title is %d runes, too long: %q", n, got)
+	}
+	if !strings.HasSuffix(got, ".") && !strings.HasSuffix(got, "\u2026") {
+		t.Fatalf("a shortened title must end at a sentence or an ellipsis: %q", got)
+	}
+}
+
+func TestCacheHitRateCountsPerRequest(t *testing.T) {
+	p := newPlugin(nil)
+	p.cfg.Enabled = true
+	send := func(trace string, cacheRead int64) {
+		usageRaw, _ := json.Marshal(map[string]any{
+			"TraceID": trace, "Model": "m", "SessionID": "s-cache",
+			"Detail": map[string]any{"InputTokens": 100, "CacheReadTokens": cacheRead, "TotalTokens": 100 + cacheRead},
+		})
+		p.handle("usage.handle", usageRaw)
+	}
+	send("c1", 0)
+	send("c2", 900)
+	send("c3", 900)
+
+	sess := p.store.snapshotSession("s-cache")
+	if sess == nil {
+		t.Fatal("session missing")
+	}
+	if sess.CacheHitRequests != 2 || sess.CacheMissRequests != 1 {
+		t.Fatalf("hits/misses = %d/%d, want 2/1", sess.CacheHitRequests, sess.CacheMissRequests)
+	}
+	if sess.CacheRead == 0 {
+		t.Fatal("cache read total was not accumulated")
+	}
+}
+
+func TestSessionTitleComesFromFirstUserMessage(t *testing.T) {
+	p := newPlugin(nil)
+	p.cfg.Enabled = true
+	body := []byte("{\"model\":\"m\",\"messages\":[{\"role\":\"user\",\"content\":\"Refactor the scheduler loop\"}]}")
+	intercept, _ := json.Marshal(map[string]any{
+		"RequestID": "r-t", "TraceID": "t-t", "SourceFormat": "openai",
+		"Model": "m", "Body": body,
+	})
+	p.handle("request.intercept_before", intercept)
+	usageRaw, _ := json.Marshal(map[string]any{
+		"TraceID": "t-t", "Model": "m", "SessionID": "s-title",
+		"Detail": map[string]any{"InputTokens": 42, "TotalTokens": 42},
+	})
+	p.handle("usage.handle", usageRaw)
+
+	sess := p.store.snapshotSession("s-title")
+	if sess == nil || sess.Title != "Refactor the scheduler loop" {
+		t.Fatalf("title = %q, want the user message", sess.Title)
+	}
+}

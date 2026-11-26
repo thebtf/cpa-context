@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"strings"
+	"unicode"
 )
 
 // Every prompt token lands in exactly one category: the dashboard draws them as
@@ -50,6 +51,131 @@ type composition struct {
 	SystemText string
 	Stream     bool
 	MaxTokens  int
+	// Title is the first user message, trimmed to a readable length. CPA resolves
+	// session ids but not titles, so the conversation has to name itself.
+	Title string
+}
+
+// maxTitleRunes keeps a card header to one line without cutting mid-word.
+const maxTitleRunes = 90
+
+// setTitle records the conversation title from the first user message.
+func (c *composition) setTitle(text string) {
+	if c.Title != "" {
+		return
+	}
+	c.Title = titleFromText(text)
+}
+
+// titleFromText picks the line of a prompt that best names it.
+//
+// A first user message is often several paragraphs, a pasted file, or a fenced
+// code block. The whole thing is not a title. The rule is: take the first
+// paragraph, then its first line that carries words, strip list and heading
+// markers, stop at the first sentence if that line is long, and finally cut on a
+// word boundary. When nothing readable is left the title stays empty and the
+// caller falls back to the session id.
+func titleFromText(text string) string {
+	for _, paragraph := range splitParagraphs(withoutCodeBlocks(text)) {
+		for _, line := range strings.Split(paragraph, "\n") {
+			candidate := stripMarkdownPrefix(line)
+			if !hasWords(candidate) {
+				continue
+			}
+			return shortenTitle(candidate)
+		}
+	}
+	return ""
+}
+
+// splitParagraphs splits on blank lines, so a four-paragraph prompt yields the
+// paragraph that was written first rather than all four joined together.
+func splitParagraphs(text string) []string {
+	normalized := strings.ReplaceAll(text, "\r\n", "\n")
+	blocks := strings.Split(normalized, "\n\n")
+	out := make([]string, 0, len(blocks))
+	for _, block := range blocks {
+		if strings.TrimSpace(block) != "" {
+			out = append(out, block)
+		}
+	}
+	return out
+}
+
+func stripMarkdownPrefix(line string) string {
+	trimmed := strings.TrimSpace(line)
+	for {
+		switch {
+		case strings.HasPrefix(trimmed, "#"):
+			trimmed = strings.TrimLeft(trimmed, "#")
+		case strings.HasPrefix(trimmed, ">"):
+			trimmed = strings.TrimPrefix(trimmed, ">")
+		case strings.HasPrefix(trimmed, "- "), strings.HasPrefix(trimmed, "* "):
+			trimmed = trimmed[2:]
+		default:
+			return strings.TrimSpace(trimmed)
+		}
+	}
+}
+
+// withoutCodeBlocks drops fenced blocks, so a prompt that opens with code is
+// named by the prose around it instead of by a line of Go.
+func withoutCodeBlocks(text string) string {
+	var out strings.Builder
+	inFence := false
+	for _, line := range strings.Split(text, "\n") {
+		if strings.HasPrefix(strings.TrimSpace(line), "```") {
+			inFence = !inFence
+			out.WriteString("\n")
+			continue
+		}
+		if inFence {
+			continue
+		}
+		out.WriteString(line)
+		out.WriteString("\n")
+	}
+	return out.String()
+}
+
+func hasWords(text string) bool {
+	for _, r := range text {
+		if unicode.IsLetter(r) || unicode.IsDigit(r) {
+			return true
+		}
+	}
+	return false
+}
+
+// shortenTitle stops at the first sentence boundary when the line is long, then
+// cuts on a word boundary.
+func shortenTitle(line string) string {
+	runes := []rune(line)
+	if len(runes) <= maxTitleRunes {
+		return line
+	}
+	// Prefer a real sentence end, but only one far enough in to be informative.
+	cut := -1
+	for i, r := range runes {
+		if i < 24 {
+			continue
+		}
+		if r == '.' || r == '?' || r == '!' {
+			cut = i + 1
+			break
+		}
+	}
+	if cut > 0 && cut <= maxTitleRunes+40 {
+		return string(runes[:cut])
+	}
+	limit := runes[:maxTitleRunes]
+	// Back up to the last space so a word is not split in half.
+	for i := len(limit) - 1; i > maxTitleRunes/2; i-- {
+		if limit[i] == ' ' {
+			return string(limit[:i]) + "…"
+		}
+	}
+	return string(limit) + "…"
 }
 
 func newComposition(format string) *composition {
@@ -140,6 +266,9 @@ func parseClaude(body []byte) *composition {
 		role := message.Role
 		for _, block := range decodeClaudeBlocks(message.Content) {
 			c.add(claudeBlockItem(role, block))
+			if role == "user" && block.kind == "text" {
+				c.setTitle(block.text)
+			}
 		}
 		c.MessageCount++
 	}
@@ -269,6 +398,9 @@ func parseOpenAIChat(body []byte) *composition {
 		role := message.Role
 		for _, part := range decodeOpenAIContent(message.Content) {
 			c.add(openAIPartItem(role, message.Name, message.ToolCallID, part))
+			if role == "user" && part.kind == "text" {
+				c.setTitle(part.text)
+			}
 		}
 		for _, call := range message.ToolCalls {
 			text := call.Function.Name + "(" + call.Function.Arguments + ")"
@@ -409,6 +541,9 @@ func parseOpenAIResponses(body []byte) *composition {
 			role := typed.Role
 			for _, part := range decodeOpenAIContent(typed.Content) {
 				c.add(openAIPartItem(role, typed.Name, typed.CallID, part))
+				if role == "user" && part.kind == "text" {
+					c.setTitle(part.text)
+				}
 			}
 			c.MessageCount++
 		default:
@@ -495,6 +630,9 @@ func parseGemini(body []byte) *composition {
 				c.add(item{Category: CatImage, Role: role, Label: "inlineData", Bytes: len(part.InlineData.Data)})
 			default:
 				c.add(openAIPartItem(role, "", "", openAIPart{kind: "text", text: part.Text}))
+				if role == "user" {
+					c.setTitle(part.Text)
+				}
 			}
 		}
 		c.MessageCount++

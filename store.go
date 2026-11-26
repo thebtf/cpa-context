@@ -65,6 +65,9 @@ type snapshot struct {
 	Compaction bool `json:"compaction,omitempty"`
 	// Project is filled from the caller scope so cards group by workspace.
 	Project string `json:"project,omitempty"`
+	// Title is the first user message of the request, trimmed. It is the only
+	// readable name the traffic carries: CPA resolves ids, not titles.
+	Title string `json:"title,omitempty"`
 }
 
 // event is a moment the context window changed for a reason other than the
@@ -106,6 +109,14 @@ type session struct {
 	CacheWrite   int64     `json:"cacheWriteTokens"`
 	Reasoning    int64     `json:"reasoningTokens"`
 	TotalTokens  int64     `json:"totalTokens"`
+	// CacheHitRequests and CacheMissRequests count requests that read any cached
+	// prompt tokens and requests that read none. The hit rate is what tells an
+	// operator whether a client is reusing its prefix.
+	CacheHitRequests  int `json:"cacheHitRequests"`
+	CacheMissRequests int `json:"cacheMissRequests"`
+	// Title is the conversation's own first user message, trimmed. CPA exposes no
+	// session title, so this is the closest thing to a name the traffic carries.
+	Title string `json:"title,omitempty"`
 	// LastContext is the prompt size of the newest request: the current window.
 	LastContext int64 `json:"lastContextTokens"`
 	// PeakContext is the largest prompt this session ever sent.
@@ -383,6 +394,20 @@ func (s *store) applyToSessionLocked(snap *snapshot) {
 	sess.CacheWrite += snap.CacheWriteTokens
 	sess.Reasoning += snap.ReasoningTokens
 	sess.TotalTokens += snap.TotalTokens
+
+	// A request counts as a cache hit when the provider read any cached prompt
+	// tokens for it. The hit rate is per request, not per token: a single large
+	// miss should not be hidden by many small hits.
+	if snap.InputTokens > 0 {
+		if snap.CacheReadTokens > 0 {
+			sess.CacheHitRequests++
+		} else {
+			sess.CacheMissRequests++
+		}
+	}
+	if sess.Title == "" && snap.Title != "" {
+		sess.Title = snap.Title
+	}
 
 	if snap.Model != "" && !contains(sess.Models, snap.Model) {
 		sess.Models = append(sess.Models, snap.Model)

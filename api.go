@@ -128,6 +128,14 @@ type totals struct {
 	CacheWrite    int64 `json:"cacheWriteTokens"`
 	Reasoning     int64 `json:"reasoningTokens"`
 	CurrentWindow int64 `json:"currentWindowTokens"`
+	// CacheHitRequests and CacheMissRequests are the fleet-wide counts behind
+	// the header hit rate.
+	CacheHitRequests  int `json:"cacheHitRequests"`
+	CacheMissRequests int `json:"cacheMissRequests"`
+	// BusiestSessionID names the conversation holding the largest prompt, so the
+	// header can point at what is actually large rather than at an average.
+	BusiestSessionID string `json:"busiestSessionId,omitempty"`
+	BusiestContext   int64  `json:"busiestContextTokens,omitempty"`
 }
 
 type limitsDescription struct {
@@ -148,6 +156,12 @@ func (p *plugin) overview() overview {
 		sum.CacheWrite += sess.CacheWrite
 		sum.Reasoning += sess.Reasoning
 		sum.CurrentWindow += sess.LastContext
+		sum.CacheHitRequests += sess.CacheHitRequests
+		sum.CacheMissRequests += sess.CacheMissRequests
+		if sess.LastContext > sum.BusiestContext {
+			sum.BusiestContext = sess.LastContext
+			sum.BusiestSessionID = sess.ID
+		}
 	}
 	return overview{
 		Plugin:     pluginID,

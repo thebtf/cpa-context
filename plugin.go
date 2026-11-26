@@ -236,6 +236,7 @@ func (p *plugin) snapshotFrom(req interceptRequest) *snapshot {
 		MaxTokens:      parsed.MaxTokens,
 		SystemChars:    len(parsed.SystemText),
 		Project:        projectFromMetadata(req.Metadata),
+		Title:          parsed.Title,
 	}
 
 	// CPA already resolves session identity from headers, body and metadata. Reuse
