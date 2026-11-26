@@ -1,68 +1,59 @@
 # cpa-context
 
 Context composition and evolution for CLIProxyAPI. CPA already reports how many
-tokens a request billed; this plugin reports what those tokens were.
+tokens a request billed; this plugin reports what those tokens were carrying.
 
-A dashboard shows, per conversation, which part of the prompt is the system
-instruction, which part is tool schemas, which is the user's own text, the
-model's reasoning, tool calls and tool results, plus how the window grew from
-request to request.
+The dashboard is a port of [dsh-context](https://github.com/bowenliang123/dsh-context)
+to CPA. The client is that project's own: its components, styles, dictionaries
+and charts are carried over unchanged, and only the host is replaced. CPA is a
+proxy, so it cannot read a harness session log; it observes the wire instead. The
+plugin therefore supplies the projection the client expects, computed from the
+request bodies and the provider's usage counters.
 
 ## What it shows
 
 | View | Question it answers |
 | --- | --- |
-| Conversation list | Which conversations ran, on which model, and how big their last prompt was |
-| Composition bar | Where the current window went, category by category |
-| Window over time | How the prompt grew request by request, and where it compacted |
-| What the newest request carried | Every block of the newest prompt, largest first, expandable to its text |
-| Window events | When the window changed for a reason other than the reply |
-| Agent family | Which conversations are children of which, and what each one carries |
+| Context tab | Composition, token split, timing, current window, timeline, events, file activity, command executions |
+| Fleet tab | The agent family: who spawned whom, what each member carries, and the delegations the prompt shows |
+| Overview | Every conversation with usage, cache hit rate, cost estimate, daily series and per-project totals |
 
-## Agent families
-
-CPA resolves session identity and the parent relationship from the client's own
-session headers. The dashboard uses that to nest conversations: a subagent, a
-fork, and a plain follow-up conversation all appear under the conversation that
-spawned them, each with its own context size. A conversation whose parent is not
-in the observed window appears as its own root rather than as a dangling edge.
+Each conversation is named from its own first user message, because CPA resolves
+session ids but not titles.
 
 ## How the numbers are produced
 
-CPA exposes no prompt body to a usage sink, and no usage counters to a request
-interceptor. So the plugin takes both halves itself:
+CPA exposes no prompt body to a usage sink and no usage counters to an
+interceptor, so the plugin takes both halves itself:
 
-1. **Request interceptor.** It parses the request body the way the wire format
-   defines it — OpenAI chat, OpenAI Responses, Claude messages, or Gemini — and
-   splits it into addressable items: system blocks, each tool schema, each
-   message block, each tool call and result.
-2. **Exact tokenizer.** Every item is measured with the tokenizer for the
-   request's model family (`tiktoken`), so the split reflects real token counts
-   rather than a character estimate. Images are charged by area.
-3. **Usage sink.** The provider's own counters arrive with the same trace id. The
-   per-item estimate is then scaled so the categories sum exactly to the prompt
-   tokens the provider billed. Cache accounting defers to CPA's own
-   `EnsureTokenBreakdownForProvider`, so providers that report cache inside the
-   input total and providers that report it beside the input total both land on
-   the right prompt size.
+1. **Request interceptor.** It parses the body by wire format — OpenAI chat,
+   OpenAI Responses, Claude messages, Gemini — and splits it into addressable
+   items: system blocks, each tool schema, each message block, each tool call and
+   its result.
+2. **Estimate.** Each item is measured with a character heuristic, then the
+   categories are scaled so they sum exactly to the prompt tokens the provider
+   billed. The heuristic is deliberate: an exact BPE pass costs about a hundred
+   times as much per request and the scaling removes its absolute error, so a
+   bargraph built on the exact tokenizer would look the same and cost more.
+3. **Usage sink.** The provider's counters arrive with the same trace id. Cache
+   accounting defers to CPA's own `EnsureTokenBreakdownForProvider`, so providers
+   that report cache inside the input total and providers that report it beside
+   the input total both land on the right prompt size.
+4. **Cost.** Estimated from the public `models.dev` catalog, which is fetched
+   once, cached beside the journal and refreshed on a long interval. A model the
+   catalog does not list is reported as unpriced, never as free.
 
-The result is a split that adds up to the billed number, with the model's real
-tokenizer deciding the proportions. The dashboard states which of the two it is
-showing: a calibrated split, or an estimate when the provider sent no counters.
+A tool result is labelled with the tool that produced it, resolved from the call
+it answers, and a call's target is read from its arguments. That is what gives
+file activity its paths and line deltas and the command panel its programs.
 
 ## Install
 
-Download the archive for the CPA host's platform from
+Download the archive for the host's platform from
 [Releases](https://github.com/thebtf/cpa-context/releases) and extract it into
 CPA's plugin directory. Keep the file name: CPA derives the plugin id from it.
 
-To build it yourself, use the CPA host's own OS and architecture:
-
-```sh
-go build -buildmode=c-shared -o cpa-context.dll .
-```
-
-Then enable it in the CPA configuration:
+Then enable it:
 
 ```yaml
 plugins:
@@ -72,72 +63,90 @@ plugins:
     cpa-context:
       enabled: true
       record_bodies: true
+      # Where observations are stored. In a container this is the mounted plugins
+      # directory, which is the one that survives a restart.
+      data_dir: "/CLIProxyAPI/plugins/cpa-context"
 ```
 
-Open the dashboard at `/v0/resource/plugins/cpa-context/dashboard`. The page
-itself is static and carries no data; it asks for the CPA management key and
-reads `/v0/management/cpa-context/overview` with it.
+Open `/v0/resource/plugins/cpa-context/dashboard` and enter the management key.
+The page polls while it is visible, so it stays current without a reload.
+
+## Storage
+
+Observations are written to SQLite in `data_dir` and replayed at startup, so a
+restart keeps the history. The journal is bounded twice: by a thirty-day
+retention window and by the same row ceiling memory keeps, applied at startup and
+on a slow ticker. A file that is unreadable, or whose tables have another shape,
+is rebuilt rather than trusted; a file that is not a database at all falls back
+to memory and the dashboard says the history is not durable.
+
+Without `data_dir` the plugin works from memory only and reports that.
 
 ## API
 
-All routes require the CPA management key.
+All routes require the management key.
 
 | Route | Purpose |
 | --- | --- |
-| `GET /v0/management/cpa-context/overview` | Every conversation, the newest requests, and recent events |
-| `GET /v0/management/cpa-context/session?id=` | One conversation with its full timeline |
-| `GET /v0/management/cpa-context/events?id=&limit=` | Window events, optionally for one conversation |
-| `POST /v0/management/cpa-context/reset` | Drop everything the plugin collected |
+| `GET /v0/management/cpa-context/sessions` | Conversations the dashboard can open |
+| `GET /v0/management/cpa-context/session?session=` | One conversation's projection |
+| `GET /v0/management/cpa-context/overview` | Totals, newest requests, events, journal status |
+| `GET /v0/management/cpa-context/events?id=&limit=` | Window events |
+| `POST /v0/management/cpa-context/reset` | Drop everything collected |
+| `POST /v0/management/cpa-context/api/dsh-context/*` | The ported client's own detail, fleet and overview routes |
 
 ## Limits this plugin cannot remove
 
-- **Since start only.** CPA gives plugins no history API, so the plugin reports
-  traffic it observed since the proxy started. It does not read CPA's own logs.
-- **Bounded memory.** Conversations and timeline points are capped and the least
-  recently active are evicted. `max_sessions` controls the session cap.
+- **Only observed traffic.** CPA gives plugins no history API, so the plugin
+  reports what it saw. The journal extends that across restarts, not backwards.
+- **Bounded memory.** Conversations, timeline points and held prompt text are
+  capped; the least recently active conversation is evicted with everything that
+  hangs off it.
 - **Prompt text is optional.** `record_bodies: false` keeps counters and the
-  category split but drops the expandable text, which is the only part that
-  stores request content.
-- **Context window is not inferred.** CPA does not expose a model's window size
-  to plugins, so the dashboard shows the client's requested output cap and the
-  observed prompt size; it never claims a percentage of a window it cannot see.
-- **Unrecognized formats are reported as such.** A request whose format the
-  plugin does not model appears as one opaque item instead of an invented split.
+  category split but drops the expandable text.
+- **Context window is not inferred.** CPA does not expose a model's window size,
+  so the dashboard shows the observed prompt size and the client's output cap,
+  never a percentage of a window it cannot see.
+- **One step's own nodes are not kept.** The projection describes the newest
+  prompt, so comparing an arbitrary step answers with the head rather than a
+  fabricated difference.
+- **Unrecognized formats are reported as such** rather than given an invented
+  split.
 
 ## Development
 
 ```sh
 go test ./...
+go test -race ./...
 ```
 
-The tests cover the four wire formats, the cache-shape normalization, the scaling
-invariant (categories always sum to the target), the trace-id join between
-interceptor and usage, the agent family tree including a parent cycle, and the
-guarantee that the interceptor never modifies a request.
+The Go tests cover the four wire formats, cache-shape normalization, the scaling
+invariant, the trace-id join, agent families including a parent cycle, eviction,
+journal durability and schema upgrades, cost arithmetic, and the route table.
 
-### End-to-end check
+The dashboard client lives in `web/` and is built before the plugin is compiled,
+because the Go build embeds its output:
 
-`test/smoke.mjs` loads the built library into a real CLIProxyAPI binary, starts a
-fake model backend, sends one request, and asserts that the composition the
-plugin reports sums to the prompt tokens the backend billed:
+```sh
+cd web && npm ci && npm run build
+```
+
+### End-to-end checks
+
+Each loads the built library into a real CLIProxyAPI binary on loopback:
 
 ```sh
 go build -buildmode=c-shared -o cpa-context.dll .
-node test/smoke.mjs path/to/cli-proxy-api path/to/cpa-context.dll
+node test/smoke.mjs  path/to/cli-proxy-api path/to/cpa-context.dll   # composition sums to the billed prompt
+node test/restart.mjs path/to/cli-proxy-api path/to/cpa-context.dll  # history survives a restart
+node test/load.mjs   path/to/cli-proxy-api path/to/cpa-context.dll  # resident memory and CPU under load
 ```
 
-It uses synthetic requests and loopback ports only: no provider accounts and no
-installed profile.
+No provider accounts and no installed profile are used.
 
 ### Releases
 
-`.github/workflows/build.yml` builds the plugin for Windows amd64, Linux amd64
-and macOS arm64, checks out the pinned CLIProxyAPI release, verifies its archive
-checksum, and runs the smoke test against that exact binary before packaging.
-Pushing a tag publishes the three archives and a `checksums.txt`. The CPA version
-the plugin is built and verified against is pinned in the workflow, because a
-plugin binary only loads into a compatible host schema.
-
-```sh
-git tag v0.1.0 && git push origin v0.1.0
-```
+`.github/workflows/build.yml` builds the dashboard, then the plugin, for Windows
+amd64, Linux amd64 and macOS arm64, downloads the pinned CLIProxyAPI release,
+verifies its archive checksum, and runs the smoke test against that exact binary
+before packaging. Pushing a tag publishes three archives and a `checksums.txt`.
