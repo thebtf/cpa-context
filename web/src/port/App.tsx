@@ -9,6 +9,7 @@ import { makeFleetView } from '../client/components/fleetView'
 import { makeOverviewPanel } from '../client/components/overviewPanel'
 import { makeProjectionProps, type PortStore, type SessionTableRow } from '../port/store'
 import type { ClientCtx } from '../client/services'
+import { makeSessionsFace } from './sessions'
 
 type Lang = keyof typeof DICTS
 
@@ -18,9 +19,13 @@ type Lang = keyof typeof DICTS
 // they already do when a dashboard runs without an optional service. The
 // locale is the exception: several panels read ctx.locale directly rather than
 // through a lookup, so it has to be a real face.
-function makeServices(locale: ReturnType<typeof makeLocale>): ClientCtx {
+function makeServices(
+  locale: ReturnType<typeof makeLocale>,
+  store: PortStore,
+): ClientCtx {
+  const sessions = makeSessionsFace(store, () => {})
   return {
-    get: () => undefined,
+    get: (name: string) => (name === 'sessions' ? sessions : undefined),
     locale,
     slots: { inject: () => undefined, register: () => undefined },
   } as unknown as ClientCtx
@@ -77,7 +82,7 @@ export function App({ store }: AppProps): JSX.Element {
   const heads = useMemo(() => makeAgentHeads(), [])
   const settings = useMemo(() => createContextSettings(), [])
 
-  const services = useMemo(() => makeServices(locale), [locale])
+  const services = useMemo(() => makeServices(locale, store), [locale, store])
   const ContextView = useMemo(() => makeContextView(services, kit, settings, heads), [services, kit, settings, heads])
   const FleetView = useMemo(() => makeFleetView(services, kit, heads), [services, kit, heads])
   const OverviewPanel = useMemo(() => makeOverviewPanel(services, kit, settings), [services, kit, settings])

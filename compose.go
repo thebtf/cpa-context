@@ -17,13 +17,16 @@ const (
 	CatToolCall   = "toolCall"
 	CatToolResult = "toolResult"
 	CatInjected   = "injected"
+	// CatSkill is injected context that a skill load produced. The client shows
+	// it as its own category, so a skill's cost is not hidden inside injections.
+	CatSkill = "skill"
 	CatImage      = "image"
 	CatOther      = "other"
 )
 
 var categoryOrder = []string{
 	CatSystem, CatTools, CatUser, CatAssistant, CatThinking,
-	CatToolCall, CatToolResult, CatInjected, CatImage, CatOther,
+	CatToolCall, CatToolResult, CatInjected, CatSkill, CatImage, CatOther,
 }
 
 // item is one addressable piece of the prompt: a message block, a tool schema,
@@ -552,6 +555,10 @@ func openAIPartItem(role, name, toolCallID string, part openAIPart, callNames ma
 	case "user":
 		return item{Category: CatUser, Role: role, Label: "user message", Text: part.text, Chars: len(part.text)}
 	}
+	// Injected context is where a skill load lands, if it is one.
+	if skill, ok := isSkillInjection(role, part.text); ok {
+		return item{Category: CatSkill, Role: role, Label: skill, Text: part.text, Chars: len(part.text)}
+	}
 	return item{Category: CatInjected, Role: role, Label: firstNonEmpty(role, "injected"), Text: part.text, Chars: len(part.text)}
 }
 
@@ -627,7 +634,11 @@ func parseOpenAIResponses(body []byte) *composition {
 			c.MessageCount++
 		default:
 			text := compactJSON(raw)
-			c.add(item{Category: CatInjected, Label: typed.Type, Text: text, Chars: len(text)})
+			if skill, ok := isSkillInjection(typed.Type, text); ok {
+				c.add(item{Category: CatSkill, Label: skill, Text: text, Chars: len(text)})
+			} else {
+				c.add(item{Category: CatInjected, Label: typed.Type, Text: text, Chars: len(text)})
+			}
 		}
 	}
 

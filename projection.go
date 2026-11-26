@@ -262,6 +262,8 @@ func buildProjection(sessionID string, snaps []*snapshot, events []event) projec
 			current.User += tokens
 		case CatInjected:
 			current.Inject += tokens
+		case CatSkill:
+			current.Skill += tokens
 		case CatThinking:
 			current.Assistant += tokens
 			current.AssistantReasoning += tokens
@@ -548,6 +550,8 @@ func nodeCategory(category string) string {
 		return dshUser
 	case CatInjected:
 		return dshInject
+	case CatSkill:
+		return dshSkill
 	case CatAssistant, CatThinking, CatToolCall:
 		return dshAssistant
 	case CatToolResult:

@@ -87,7 +87,10 @@ func (p *plugin) factsBody(raw []byte) any {
 	for _, part := range request.Parts {
 		switch part {
 		case "", "head":
-			parts["head"] = timeline
+			// The client expects a head that says how detailed it is: detailRev
+			// makes it fetch the rest through the detail routes instead of
+			// treating this as a complete record.
+			parts["head"] = slimHead(timeline)
 		case "series":
 			parts["series"] = seriesWithChart(timeline.Requests)
 		case "requests":
@@ -287,4 +290,56 @@ func seriesWithChart(requests []requestRec) []map[string]any {
 		out = append(out, entry)
 	}
 	return out
+}
+
+// slimHead is the projection with the heavy series removed and the detail
+// revision set, which is the shape the client treats as "the summary; ask for
+// the rest". Sending the full record here makes the client skip its own detail
+// loading and render an empty browser.
+func slimHead(timeline *timelineProjection) map[string]any {
+	if timeline == nil {
+		return nil
+	}
+	head := map[string]any{
+		"ok":        timeline.OK,
+		"model":     timeline.Model,
+		"current":   timeline.Current,
+		"detailRev": timeline.DetailRev,
+		"counts":    timeline.Counts,
+		"last":      timeline.Last,
+	}
+	if timeline.MaxOutput > 0 {
+		head["maxOutputTokens"] = timeline.MaxOutput
+	}
+	if timeline.ToolCalls > 0 {
+		head["toolCalls"] = timeline.ToolCalls
+	}
+	if timeline.Images > 0 {
+		head["images"] = timeline.Images
+	}
+	if timeline.HumanInputs > 0 {
+		head["humanInputs"] = timeline.HumanInputs
+	}
+	if timeline.Answers > 0 {
+		head["answers"] = timeline.Answers
+	}
+	if timeline.LastUser != "" {
+		head["lastUser"] = timeline.LastUser
+	}
+	if timeline.ToolTally != nil {
+		head["toolTally"] = timeline.ToolTally
+	}
+	if timeline.ProgramTally != nil {
+		head["programTally"] = timeline.ProgramTally
+	}
+	if timeline.Timing != nil {
+		head["timing"] = timeline.Timing
+	}
+	if timeline.Cost != nil {
+		head["cost"] = timeline.Cost
+	}
+	if timeline.CostRead != nil {
+		head["costRead"] = timeline.CostRead
+	}
+	return head
 }
