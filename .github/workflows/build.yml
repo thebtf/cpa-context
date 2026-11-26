@@ -100,6 +100,11 @@ jobs:
         # The smoke test starts a fake upstream, loads the plugin into the real
         # CPA release, sends one request and checks that the composition the
         # plugin reports sums to the prompt tokens the upstream billed.
+        #
+        # It then loads the file under the versioned name the release ships, and
+        # checks the id and the version the host resolves from it. A plain name
+        # also loads, so without this step a build that lost the version would
+        # still pass while the plugin list showed no version for it.
         env:
           GH_TOKEN: ${{ github.token }}
           ASSET: ${{ matrix.asset }}
@@ -108,6 +113,8 @@ jobs:
           EXT: ${{ matrix.ext }}
         run: |
           set -euo pipefail
+          version="$(sed -n 's/.*pluginVersion = "\(.*\)".*/\1/p' plugin.go)"
+          test -n "$version" || { echo "pluginVersion is not set in plugin.go"; exit 1; }
           mkdir -p .work/cpa
           gh release download "v$CPA_VERSION" --repo router-for-me/CLIProxyAPI \
             --pattern "$ASSET" --dir .work/cpa
@@ -126,6 +133,7 @@ jobs:
           esac
           chmod +x ".work/cpa/$BINARY"
           node test/smoke.mjs ".work/cpa/$BINARY" "cpa-context.$EXT"
+          node test/versioned.mjs ".work/cpa/$BINARY" "cpa-context.$EXT" "cpa-context-v$version.$EXT" "$version"
 
       - name: Package
         shell: bash

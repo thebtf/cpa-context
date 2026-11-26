@@ -11,7 +11,7 @@ import { spawn } from "node:child_process";
 import { createServer } from "node:http";
 import { mkdtemp, mkdir, copyFile, writeFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { join, resolve, extname } from "node:path";
 
 const KEY = "versioned-management-key";
 const CLIENT = "versioned-client-key";
@@ -43,14 +43,20 @@ function startBackend() {
 
 const cpa = resolve(process.argv[2] ?? "");
 const library = resolve(process.argv[3] ?? "");
-const fileName = process.argv[4] ?? "cpa-context-v0.0.0.dll";
+const fileName = process.argv[4] ?? `cpa-context-v0.0.0${extname(library) || ".dll"}`;
+const expectedVersion = process.argv[5] ?? "";
+
+// CPA looks in plugins/<goos>/<goarch>/ first, so the probe installs there for
+// the platform it runs on rather than assuming one.
+const goos = process.platform === "win32" ? "windows" : process.platform === "darwin" ? "darwin" : "linux";
+const goarch = process.arch === "arm64" ? "arm64" : "amd64";
 
 const root = await mkdtemp(join(tmpdir(), "cpa-context-versioned-"));
 const plugins = join(root, "plugins");
 const auths = join(root, "auths");
-await mkdir(join(plugins, "windows", "amd64"), { recursive: true });
+await mkdir(join(plugins, goos, goarch), { recursive: true });
 await mkdir(auths, { recursive: true });
-await copyFile(library, join(plugins, "windows", "amd64", fileName));
+await copyFile(library, join(plugins, goos, goarch, fileName));
 
 const backend = await startBackend();
 const port = await freePort();
@@ -120,5 +126,20 @@ await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 })
 if (!entry || entry.id !== "cpa-context" || sessions !== 200) {
 	console.error("FAIL: the versioned file name did not resolve to the plugin id");
 	process.exit(1);
+}
+// The host reports two versions: the one in the file name, and the one the
+// plugin declares about itself. A release where they disagree shows the operator
+// one number in the list and another in the logs.
+if (expectedVersion) {
+	const fromName = fileName.match(/-v(.+)\.[^.]+$/)?.[1] ?? "";
+	const fromMetadata = entry?.metadata?.version ?? "";
+	if (fromName !== expectedVersion) {
+		console.error(`FAIL: the file name says ${fromName}, the release is ${expectedVersion}`);
+		process.exit(1);
+	}
+	if (fromMetadata !== expectedVersion) {
+		console.error(`FAIL: the plugin declares ${fromMetadata}, the release is ${expectedVersion}`);
+		process.exit(1);
+	}
 }
 console.log("ok: a versioned file name resolves to the plugin id");
