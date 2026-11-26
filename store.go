@@ -407,7 +407,6 @@ func (s *store) applyToSessionLocked(snap *snapshot) {
 	if !ok {
 		sess = &session{ID: id, FirstSeen: snap.StartedAt, Unsourced: unsourced}
 		s.sessions[id] = sess
-		s.evictSessionsLocked()
 	}
 	if sess.FirstSeen.IsZero() || (!snap.StartedAt.IsZero() && snap.StartedAt.Before(sess.FirstSeen)) {
 		sess.FirstSeen = snap.StartedAt
@@ -509,6 +508,11 @@ func (s *store) applyToSessionLocked(snap *snapshot) {
 	}
 
 	s.recordEventsLocked(sess, snap)
+
+	// The cap is enforced here, once this request has set LastSeen. Evicting any
+	// earlier compared a brand-new session, whose LastSeen is still zero, against
+	// the others and dropped the newest conversation instead of the oldest.
+	s.evictSessionsLocked()
 }
 
 // recordEventsLocked derives window-change events from the snapshot sequence.
@@ -588,9 +592,15 @@ func (s *store) pushEventLocked(ev event) {
 func (s *store) rememberLocked(snap *snapshot) {
 	s.recent = append(s.recent, snap)
 	if len(s.recent) > s.limits.maxRecent {
-		dropped := s.recent[0]
-		if list := s.bySession[dropped.SessionID]; len(list) > 0 && list[0] == dropped {
-			list = list[1:]
+		overflow := s.recent[:len(s.recent)-s.limits.maxRecent]
+		for _, dropped := range overflow {
+			list := s.bySession[dropped.SessionID]
+			for i, entry := range list {
+				if entry == dropped {
+					list = append(list[:i], list[i+1:]...)
+					break
+				}
+			}
 			if len(list) == 0 {
 				delete(s.bySession, dropped.SessionID)
 			} else {
@@ -692,7 +702,13 @@ func (s *store) evictSessionsLocked() {
 	sort.Slice(entries, func(i, j int) bool { return entries[i].seen.Before(entries[j].seen) })
 	remove := len(entries) - s.limits.maxSessions
 	for i := range remove {
-		delete(s.sessions, entries[i].id)
+		id := entries[i].id
+		delete(s.sessions, id)
+		// Everything that hangs off the conversation goes with it: its snapshot
+		// index and its cached projection. Leaving them behind leaks a session's
+		// worth of memory for every conversation the proxy has ever dropped.
+		delete(s.bySession, id)
+		delete(s.projections, id)
 	}
 }
 
@@ -844,8 +860,40 @@ func (s *store) familyRoots() []*agentNode {
 			ids = append(ids, id)
 		}
 	}
+	// A cycle leaves every member with an existing parent, so no root would be
+	// reported and the whole family would vanish from the list. Every member that
+	// no root reaches becomes a root itself; the cycle guard in buildNodeLocked
+	// then keeps the tree finite.
+	reached := make(map[string]bool, len(s.sessions))
+	var walk func(id string)
+	walk = func(id string) {
+		if reached[id] {
+			return
+		}
+		reached[id] = true
+		for childID, child := range s.sessions {
+			if child.ParentID == id {
+				walk(childID)
+			}
+		}
+	}
+	for _, id := range ids {
+		walk(id)
+	}
+	extra := make([]string, 0, len(s.sessions))
+	for id := range s.sessions {
+		if !reached[id] {
+			extra = append(extra, id)
+		}
+	}
+	sort.Strings(extra)
+	for _, id := range extra {
+		ids = append(ids, id)
+		reached[id] = true
+	}
 	s.mu.RUnlock()
 	sort.Strings(ids)
+
 	out := make([]*agentNode, 0, len(ids))
 	for _, id := range ids {
 		if node := s.agentFamily(id); node != nil {
@@ -938,3 +986,8 @@ func firstNonZero(values ...int64) int64 {
 	}
 	return 0
 }
+
+// sortedKeys returns map keys in a stable order, so a scan does not depend on
+// map iteration.
+
+// reachedFromAny reports whether any id has a parent chain that terminates.

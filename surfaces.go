@@ -165,20 +165,32 @@ func isAgentTool(tool string) bool {
 	return false
 }
 
+// overviewRequest is the overview query. It is a named type because the scope
+// is read in two places: here and when resolving the window.
+type overviewRequest struct {
+	Part  string         `json:"part"`
+	Sort  string         `json:"sort"`
+	Page  int            `json:"page"`
+	Tally string         `json:"tally"`
+	Scope *overviewScope `json:"scope"`
+}
+
+type overviewScope struct {
+	Range    any           `json:"range"`
+	Day      string        `json:"day"`
+	Query    string        `json:"query"`
+	Calendar *overviewSpan `json:"calendar"`
+}
+
+type overviewSpan struct {
+	From string `json:"from"`
+	To   string `json:"to"`
+}
+
 // overviewAnswer serves the cross-session page: summary, daily series, the
 // session list, tool and command tallies, and per-project totals.
 func (p *plugin) overviewAnswer(raw []byte) any {
-	var request struct {
-		Part  string `json:"part"`
-		Sort  string `json:"sort"`
-		Page  int    `json:"page"`
-		Tally string `json:"tally"`
-		Scope *struct {
-			Range any    `json:"range"`
-			Day   string `json:"day"`
-			Query string `json:"query"`
-		} `json:"scope"`
-	}
+	var request overviewRequest
 	if err := json.Unmarshal(raw, &request); err != nil {
 		return clientError("invalid request")
 	}
@@ -191,16 +203,14 @@ func (p *plugin) overviewAnswer(raw []byte) any {
 		days = 1
 	case "7d":
 		days = 7
-	case "30d":
-		days = 30
 	}
-	cutoff := time.Now().AddDate(0, 0, -days)
+	start, end := scopeWindow(request, days, time.Now())
 
 	// Scoping by range keeps the whole page consistent: a day filter that only
 	// applied to one card would make the header disagree with the list.
 	scoped := make([]*session, 0, len(sessions))
 	for _, sess := range sessions {
-		if sess.LastSeen.After(cutoff) {
+		if at := sess.LastSeen; !at.Before(start) && (end.IsZero() || at.Before(end)) {
 			scoped = append(scoped, sess)
 		}
 	}
@@ -240,18 +250,7 @@ func (p *plugin) overviewAnswer(raw []byte) any {
 	return clientError("unknown overview part")
 }
 
-func rangeOf(request struct {
-	Part  string `json:"part"`
-	Sort  string `json:"sort"`
-	Page  int    `json:"page"`
-	Tally string `json:"tally"`
-	Scope *struct {
-		Range any    `json:"range"`
-		Day   string `json:"day"`
-		Query string `json:"query"`
-	} `json:"scope"`
-},
-) string {
+func rangeOf(request overviewRequest) string {
 	if request.Scope == nil {
 		return "30d"
 	}
@@ -607,4 +606,42 @@ func (p *plugin) skillList() []map[string]any {
 		}
 	}
 	return out
+}
+
+// scopeWindow resolves the window a scope describes.
+//
+// A range is a calendar window, not a rolling one: "today" is from midnight, the
+// way the client draws its own presets. A day picked on the heatmap narrows to
+// that calendar day, and a calendar scope is from its first day to the end of its
+// last, which is what the client's own picker produces.
+func scopeWindow(request overviewRequest, days int, now time.Time) (time.Time, time.Time) {
+	if request.Scope != nil {
+		if day := request.Scope.Day; day != "" {
+			return dayBounds(day, now)
+		}
+		if calendar := request.Scope.Calendar; calendar != nil && calendar.From != "" {
+			start, _ := dayBounds(calendar.From, now)
+			to := calendar.To
+			if to == "" {
+				to = calendar.From
+			}
+			_, end := dayBounds(to, now)
+			return start, end
+		}
+	}
+	startOfToday := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
+	if days <= 1 {
+		return startOfToday, time.Time{}
+	}
+	return startOfToday.AddDate(0, 0, -(days - 1)), time.Time{}
+}
+
+// dayBounds returns the first instant of a YYYY-MM-DD day and the first instant
+// of the next one, in the process time zone.
+func dayBounds(day string, now time.Time) (time.Time, time.Time) {
+	parsed, err := time.ParseInLocation("2006-01-02", day, now.Location())
+	if err != nil {
+		return time.Time{}, time.Time{}
+	}
+	return parsed, parsed.AddDate(0, 0, 1)
 }
