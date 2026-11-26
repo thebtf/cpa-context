@@ -54,7 +54,7 @@ func (p *plugin) detailBody(sessionID string) any {
 	body := map[string]any{
 		"rev":      timeline.DetailRev,
 		"head":     timeline,
-		"requests": timeline.Requests,
+		"requests": seriesWithChart(timeline.Requests),
 		"events":   timeline.Events,
 		"fileOps":  timeline.FileOps,
 		"commands": timeline.Commands,
@@ -89,7 +89,7 @@ func (p *plugin) factsBody(raw []byte) any {
 		case "", "head":
 			parts["head"] = timeline
 		case "series":
-			parts["series"] = timeline.Requests
+			parts["series"] = seriesWithChart(timeline.Requests)
 		case "requests":
 			parts["requests"] = timeline.Requests
 		case "nodes":
@@ -136,7 +136,7 @@ func (p *plugin) historyBody(raw []byte) any {
 	var rows []any
 	switch request.Part {
 	case "requests":
-		rows = anySlice(timeline.Requests)
+		rows = anySlice(seriesWithChart(timeline.Requests))
 	case "events":
 		rows = anySlice(timeline.Events)
 	case "nodes":
@@ -250,3 +250,41 @@ func sessionFieldOf(raw []byte, field string) string {
 	return value
 }
 
+
+// seriesWithChart turns the per-request records into the shape the chart reads.
+// The split travels as a separate map so the record keeps its plain fields and
+// the chart still gets one bar per request.
+func seriesWithChart(requests []requestRec) []map[string]any {
+	out := make([]map[string]any, 0, len(requests))
+	for _, record := range requests {
+		entry := map[string]any{
+			"seq":       record.Seq,
+			"step":      record.Step,
+			"turn":      record.Turn,
+			"time":      record.Time,
+			"total":     record.Total,
+			"prompt":    record.Prompt,
+			"system":    record.System,
+			"tools":     record.Tools,
+			"user":      record.User,
+			"inject":    record.Inject,
+			"skill":     record.Skill,
+			"assistant": record.Assistant,
+			"tool":      record.Tool,
+		}
+		if record.CacheRead > 0 {
+			entry["cacheRead"] = record.CacheRead
+		}
+		if record.Output > 0 {
+			entry["output"] = record.Output
+		}
+		if record.Net != 0 {
+			entry["net"] = record.Net
+		}
+		if len(record.Chart) > 0 {
+			entry["composition"] = record.Chart
+		}
+		out = append(out, entry)
+	}
+	return out
+}

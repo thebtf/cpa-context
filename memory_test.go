@@ -98,3 +98,47 @@ func TestItemBudgetBoundsHeldText(t *testing.T) {
 		t.Error("dropping text also dropped sessions, which it must not")
 	}
 }
+
+// Dropping the prompt text must not drop the chart. Every request keeps its own
+// split even when only the newest snapshot still holds its text.
+func TestTimelineKeepsSplitAfterTextIsDropped(t *testing.T) {
+	p := newPlugin(nil)
+	p.cfg.Enabled = true
+
+	filler := strings.Repeat("a long line of context ", 200)
+	for i := 0; i < 5; i++ {
+		messages := []map[string]any{
+			{"role": "system", "content": "be careful"},
+			{"role": "user", "content": filler + string(rune('a'+i))},
+		}
+		body, _ := json.Marshal(map[string]any{"model": "m", "messages": messages})
+		trace := fmt.Sprintf("t%d", i)
+		intercept, _ := json.Marshal(map[string]any{
+			"RequestID": trace, "TraceID": trace, "SourceFormat": "openai",
+			"Model": "m", "Body": body,
+		})
+		p.handle("request.intercept_before", intercept)
+		usageRaw, _ := json.Marshal(map[string]any{
+			"TraceID": trace, "Model": "m", "SessionID": "s-chart",
+			"Detail": map[string]any{"InputTokens": 3000 + i*100, "TotalTokens": 3000 + i*100},
+		})
+		p.handle("usage.handle", usageRaw)
+	}
+
+	built, ok := p.store.projectionFor("s-chart")
+	if !ok {
+		t.Fatal("projection is missing")
+	}
+	requests := built.ContextTimeline.Requests
+	if len(requests) != 5 {
+		t.Fatalf("requests = %d, want one per model call", len(requests))
+	}
+	for _, record := range requests {
+		if len(record.Chart) == 0 {
+			t.Errorf("request %d has no split: its bar would be empty", record.Seq)
+		}
+		if record.User == 0 {
+			t.Errorf("request %d reports no user tokens", record.Seq)
+		}
+	}
+}

@@ -133,6 +133,8 @@ type requestRec struct {
 	Output    int64 `json:"output,omitempty"`
 	StepCount int   `json:"stepCount,omitempty"`
 	Net       int64 `json:"net,omitempty"`
+	// Chart is the per-category split of this request, used to draw its bar.
+	Chart map[string]int `json:"-"`
 }
 
 type eventRec struct {
@@ -313,22 +315,24 @@ func buildProjection(sessionID string, snaps []*snapshot, events []event) projec
 			CacheRead: snap.CacheReadTokens,
 			Output:    snap.OutputTokens,
 		}
-		for _, it := range snap.Items {
-			tokens := int64(it.Chars)
-			switch it.Category {
-			case CatUser:
-				record.User += tokens
-			case CatInjected:
-				record.Inject += tokens
-			case CatThinking, CatAssistant, CatToolCall:
-				record.Assistant += tokens
-			case CatToolResult:
-				record.Tool += tokens
-			case CatSystem:
-				record.System += tokens
-			case CatTools:
-				record.Tools += tokens
+		// The split comes from the stored counters, not from the items: a
+		// snapshot whose prompt text was dropped still carries its composition,
+		// and the chart needs every request, not only the newest.
+		record.System = int64(snap.Composition[CatSystem])
+		record.Tools = int64(snap.Composition[CatTools])
+		record.User = int64(snap.Composition[CatUser])
+		record.Inject = int64(snap.Composition[CatInjected])
+		record.Assistant = int64(snap.Composition[CatAssistant] +
+			snap.Composition[CatThinking] + snap.Composition[CatToolCall])
+		record.Tool = int64(snap.Composition[CatToolResult])
+		if len(snap.Composition) > 0 {
+			chart := make(map[string]int, len(snap.Composition))
+			for category, value := range snap.Composition {
+				if value > 0 {
+					chart[category] = value
+				}
 			}
+			record.Chart = chart
 		}
 		// A step that opens with a user message starts a new turn; the rest
 		// continue the turn the agent is already working in.
