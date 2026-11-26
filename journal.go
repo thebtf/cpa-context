@@ -206,6 +206,35 @@ func (j *journal) appendEvent(ev event) {
 	)
 }
 
+// retention is how long an observation is kept. The journal exists so a restart
+// does not erase the picture, not so it becomes a permanent archive, and every
+// replay loads the whole file into memory.
+const journalRetention = 30 * 24 * time.Hour
+
+// pruneLocked drops observations older than the retention window and returns
+// how many were removed. It runs at startup and on a slow ticker, so a proxy
+// that stays up for months does not grow a file it then has to read back.
+func (j *journal) pruneOld(now time.Time) int {
+	if j == nil || j.db == nil {
+		return 0
+	}
+	cutoff := now.Add(-journalRetention).UnixMilli()
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	removed := 0
+	if result, err := j.db.Exec(`DELETE FROM requests WHERE started_at < ?`, cutoff); err == nil {
+		if n, errRows := result.RowsAffected(); errRows == nil {
+			removed += int(n)
+		}
+	}
+	if result, err := j.db.Exec(`DELETE FROM events WHERE at < ?`, cutoff); err == nil {
+		if n, errRows := result.RowsAffected(); errRows == nil {
+			removed += int(n)
+		}
+	}
+	return removed
+}
+
 // replay reads the stored observations back, oldest first.
 func (j *journal) replay() ([]*snapshot, []event) {
 	if j == nil || j.db == nil {
@@ -258,17 +287,6 @@ func (j *journal) replay() ([]*snapshot, []event) {
 	return snaps, events
 }
 
-// prune keeps the file bounded: observations older than the retention window
-// are dropped, so a long-running proxy does not grow forever.
-func (j *journal) prune(cutoff time.Time) {
-	if j == nil || j.db == nil {
-		return
-	}
-	j.mu.Lock()
-	defer j.mu.Unlock()
-	_, _ = j.db.Exec(`DELETE FROM requests WHERE started_at < ?`, cutoff.UnixMilli())
-	_, _ = j.db.Exec(`DELETE FROM events WHERE at < ?`, cutoff.UnixMilli())
-}
 
 func (j *journal) reset() {
 	if j == nil || j.db == nil {
@@ -286,5 +304,9 @@ func (j *journal) close() {
 	}
 	j.mu.Lock()
 	defer j.mu.Unlock()
+	// Closing the handle is not enough on Windows while other goroutines may
+	// still reach for the file, so the database is also released explicitly.
+	_, _ = j.db.Exec(`PRAGMA wal_checkpoint(TRUNCATE)`)
 	_ = j.db.Close()
+	j.db = nil
 }

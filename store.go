@@ -172,6 +172,10 @@ type store struct {
 	// pending maps trace id to the snapshot awaiting its usage record.
 	pending map[string]*snapshot
 	limits  limits
+	// bySession indexes the same snapshots by conversation, so a lookup does not
+	// walk every request the proxy has seen. It holds the same pointers as
+	// recent, which is what keeps the two views consistent.
+	bySession map[string][]*snapshot
 	// journal is the persistent store. It may be nil, in which case the plugin
 	// works from memory only and says so.
 	journal *journal
@@ -220,6 +224,7 @@ func newStore(limits limits) *store {
 	return &store{
 		sessions:      make(map[string]*session),
 		pending:       make(map[string]*snapshot),
+		bySession:     make(map[string][]*snapshot),
 		projections:   make(map[string]*cachedProjection),
 		projectionCap: 64,
 		limits:        limits,
@@ -583,7 +588,22 @@ func (s *store) pushEventLocked(ev event) {
 func (s *store) rememberLocked(snap *snapshot) {
 	s.recent = append(s.recent, snap)
 	if len(s.recent) > s.limits.maxRecent {
+		dropped := s.recent[0]
+		if list := s.bySession[dropped.SessionID]; len(list) > 0 && list[0] == dropped {
+			list = list[1:]
+			if len(list) == 0 {
+				delete(s.bySession, dropped.SessionID)
+			} else {
+				s.bySession[dropped.SessionID] = list
+			}
+		}
 		s.recent = s.recent[len(s.recent)-s.limits.maxRecent:]
+	}
+	if snap.SessionID != "" {
+		s.bySession[snap.SessionID] = append(s.bySession[snap.SessionID], snap)
+		if len(s.bySession[snap.SessionID]) > s.limits.maxTimeline*4 {
+			s.bySession[snap.SessionID] = s.bySession[snap.SessionID][len(s.bySession[snap.SessionID])-s.limits.maxTimeline*4:]
+		}
 	}
 	s.dropSupersededItemsLocked(snap)
 	s.enforceItemBudgetLocked()
@@ -680,12 +700,7 @@ func (s *store) evictSessionsLocked() {
 // the previous render while the conversation has not gained a request.
 func (s *store) projectionFor(sessionID string) (projection, bool) {
 	s.mu.RLock()
-	snaps := make([]*snapshot, 0, 64)
-	for _, snap := range s.recent {
-		if snap.SessionID == sessionID {
-			snaps = append(snaps, snap)
-		}
-	}
+	snaps := s.bySession[sessionID]
 	events := make([]event, 0, 32)
 	for i := len(s.events) - 1; i >= 0 && len(events) < 500; i-- {
 		if s.events[i].SessionID == sessionID {
@@ -726,15 +741,18 @@ func (s *store) projectionFor(sessionID string) (projection, bool) {
 func (s *store) snapshotsFor(sessionID string) []*snapshot {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	out := make([]*snapshot, 0, 64)
-	for _, snap := range s.recent {
-		if snap.SessionID == sessionID {
-			out = append(out, snap)
-		}
+	indexed := s.bySession[sessionID]
+	if len(indexed) == 0 {
+		return nil
 	}
-	return out
+	return append([]*snapshot(nil), indexed...)
 }
 
+// snapshotSessions copies the aggregate of every conversation for a caller that
+// only reads it. The per-request timeline is not copied: no caller of this
+// function reads it, and copying it made every list render cost grow with the
+// number of requests the proxy had ever seen. A caller that needs the timeline
+// reads it through the projection, which is cached.
 func (s *store) snapshotSessions() []*session {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -742,7 +760,6 @@ func (s *store) snapshotSessions() []*session {
 	for _, sess := range s.sessions {
 		clone := *sess
 		clone.Models = append([]string(nil), sess.Models...)
-		clone.Timeline = append([]timelinePoint(nil), sess.Timeline...)
 		out = append(out, &clone)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].LastSeen.After(out[j].LastSeen) })

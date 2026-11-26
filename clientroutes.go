@@ -167,8 +167,10 @@ func (p *plugin) historyBody(raw []byte) any {
 	})
 }
 
-// deltaBody answers a step comparison. The ported view only needs the nodes it
-// would show for one step, which the head projection already carries.
+// deltaBody answers a step comparison. The head projection describes the newest
+// prompt only, so a step's own nodes are not available on demand: answering with
+// the head and an empty diff keeps the browser consistent, while a fabricated
+// difference would show content that step never carried.
 func (p *plugin) deltaBody(raw []byte) any {
 	var request struct {
 		SessionID string `json:"sessionId"`
@@ -183,12 +185,12 @@ func (p *plugin) deltaBody(raw []byte) any {
 	}
 	timeline := built.ContextTimeline
 	return clientEnvelope(map[string]any{
-		"added":      timeline.Nodes,
-		"viewNodes":  timeline.Nodes,
-		"counts":     map[string]int{},
-		"tokens":     map[string]int{},
+		"added":         timeline.Nodes,
+		"viewNodes":     timeline.Nodes,
+		"counts":        map[string]int{},
+		"tokens":        map[string]int{},
 		"removedCounts": map[string]int{},
-		"tokenUp":    map[string]int{},
+		"tokenUp":       map[string]int{},
 	})
 }
 

@@ -84,6 +84,9 @@ func (p *plugin) attachJournal(path string) {
 	}
 	opened := openJournal(path)
 	p.store.journal = opened
+	// Drop what is past retention before loading, so an old file does not fill
+	// memory on the way in.
+	opened.pruneOld(timeNow())
 	snaps, events := opened.replay()
 	if len(snaps) == 0 && len(events) == 0 {
 		return
@@ -93,6 +96,9 @@ func (p *plugin) attachJournal(path string) {
 	for _, snap := range snaps {
 		p.store.applyToSessionLocked(snap)
 		p.store.recent = append(p.store.recent, snap)
+		if snap.SessionID != "" {
+			p.store.bySession[snap.SessionID] = append(p.store.bySession[snap.SessionID], snap)
+		}
 	}
 	p.store.events = append(p.store.events, events...)
 	if len(p.store.recent) > p.store.limits.maxRecent {
