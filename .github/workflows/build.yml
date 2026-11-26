@@ -57,6 +57,17 @@ jobs:
         with:
           node-version: "22"
 
+      # The dashboard is a Vite build of the ported client, and the Go build
+      # embeds its output. It has to exist before anything imports it.
+      - name: Build dashboard client
+        shell: bash
+        working-directory: web
+        run: |
+          set -euo pipefail
+          npm ci --no-audit --no-fund
+          npm run build
+          ls -la dist
+
       - name: Test
         shell: bash
         run: go test ./...
@@ -166,6 +177,9 @@ jobs:
             configs:
               cpa-context:
                 enabled: true
+                # Observations are stored in SQLite here. Point it at a mounted
+                # directory so a restart keeps the history.
+                data_dir: \"/CLIProxyAPI/plugins/cpa-context\"
           \`\`\`
 
           Open \`/v0/resource/plugins/cpa-context/dashboard\` and enter the management key." \
