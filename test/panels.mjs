@@ -83,10 +83,20 @@ for (let i = 0; i < 200; i++) {
 	await new Promise(r => setTimeout(r, 150));
 }
 
-async function ask(session, content) {
+// ask sends one request. A child names its parent in X-Parent-Session-ID, which
+// is the header CPA reads to link a subagent to the conversation that spawned
+// it; without it the two look like two unrelated roots.
+async function ask(session, content, parent) {
+	const headers = { "content-type": "application/json", Authorization: `Bearer ${CLIENT}`, "X-Session-Id": session }
+	if (parent !== undefined) {
+		headers["X-Parent-Session-ID"] = parent
+		// CPA reads the subagent's own name from X-Agent-Id. Without it the roster
+		// calls every child "subagent", which tells the operator nothing.
+		headers["X-Agent-Id"] = session
+	}
 	return fetch(`${base}/v1/chat/completions`, {
 		method: "POST",
-		headers: { "content-type": "application/json", Authorization: `Bearer ${CLIENT}`, "X-Session-Id": session },
+		headers,
 		body: JSON.stringify({
 			model: MODEL, max_tokens: 8,
 			messages: [
@@ -107,7 +117,7 @@ async function ask(session, content) {
 // A prompt that opens with a harness wrapper, which is what named the sessions
 // after the tag in the operator's screenshot.
 await ask("panels-lead", "<system-reminder>\nInternal note the person never wrote.\n</system-reminder>\n\nInvestigate why the chart bars are flat.");
-await ask("panels-child", "<system-reminder>\nAnother internal note.\n</system-reminder>\n\nDo one slice of the work.");
+await ask("panels-child", "<system-reminder>\nAnother internal note.\n</system-reminder>\n\nDo one slice of the work.", "panels-lead");
 await new Promise(r => setTimeout(r, 2000));
 
 const list = await fetch(`${base}/v0/management/cpa-context/sessions`, { headers }).then(r => r.json());
@@ -139,6 +149,19 @@ if (team === null || !Array.isArray(team?.members) || team.members.length === 0)
 	failures++;
 } else {
 	console.log("fleet members:", team.members.map(m => `${m.name}:${m.role}`).join(", "));
+	// A subagent that named its parent must appear as a teammate, not as a
+	// second root: that is the link the operator reported missing.
+	const teammate = team.members.find(m => m.role === "teammate");
+	if (teammate === undefined) {
+		console.error("FAIL: the child that named its parent is not a teammate in the roster");
+		failures++;
+	} else {
+		console.log("teammate:", teammate.name, teammate.id);
+	}
+	if (team.members.length < 2) {
+		console.error(`FAIL: the roster holds ${team.members.length} member(s), the subagent is missing`);
+		failures++;
+	}
 }
 
 const headerRows = await fetch(`${base}/v0/management/cpa-context/api/dsh-context/history`, {
