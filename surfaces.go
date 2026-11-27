@@ -226,7 +226,13 @@ func (p *plugin) memberName(node *agentNode) string {
 	if node == nil {
 		return ""
 	}
-	if name := firstNonEmpty(node.AgentName, node.Label); name != "" {
+	// "main" and "subagent" are role words CPA puts on every conversation; they
+	// name nothing. A label an operator set, or the conversation's own first line,
+	// says far more, so a generic word is used only when nothing else exists.
+	if name := firstNonEmpty(node.Label); name != "" {
+		return name
+	}
+	if name := node.AgentName; name != "" && !isGenericAgentName(name) {
 		return name
 	}
 	if title := p.memberTitle(node.ID); title != "" {
@@ -235,10 +241,23 @@ func (p *plugin) memberName(node *agentNode) string {
 	if isDerivedForkID(node.ID) {
 		return "branch"
 	}
+	if name := node.AgentName; name != "" {
+		return name
+	}
 	if len(node.ID) <= 40 && !looksLikeHash(node.ID) {
 		return node.ID
 	}
 	return "conversation"
+}
+
+// isGenericAgentName reports the two words CPA uses for a conversation's role
+// rather than for the agent itself.
+func isGenericAgentName(name string) bool {
+	switch strings.ToLower(strings.TrimSpace(name)) {
+	case "main", "subagent", "agent", "root":
+		return true
+	}
+	return false
 }
 
 // memberTitle is the conversation's own first line, the same text its card shows.

@@ -34,7 +34,7 @@ func (p *plugin) teamProjection(sessionID string) map[string]any {
 		return nil
 	}
 	members := make([]map[string]any, 0, 8)
-	collectMembers(family, p.store.storeKey(sessionID), &members)
+	p.collectMembers(family, p.store.storeKey(sessionID), &members)
 	return map[string]any{
 		"members": members,
 		"tasks":   []any{},
@@ -43,7 +43,7 @@ func (p *plugin) teamProjection(sessionID string) map[string]any {
 
 // collectMembers walks the family and renders one row per agent. The lead keeps
 // its own role so the client can anchor the tree on it; a child is a teammate.
-func collectMembers(node *agentNode, self string, out *[]map[string]any) {
+func (p *plugin) collectMembers(node *agentNode, self string, out *[]map[string]any) {
 	if node == nil {
 		return
 	}
@@ -62,7 +62,7 @@ func collectMembers(node *agentNode, self string, out *[]map[string]any) {
 	// existed as a conversation. Listing that under the fleet's roster would claim
 	// a delegation that never happened, so a fork is reported as the fork it is.
 	fork := isForkSession(node)
-	name := firstNonEmpty(node.AgentName, node.Label, node.ID)
+	name := p.memberName(node)
 	phase := "active"
 	if node.Requests == 0 {
 		phase = "provisioning"
@@ -83,7 +83,7 @@ func collectMembers(node *agentNode, self string, out *[]map[string]any) {
 	}
 	*out = append(*out, row)
 	for _, child := range node.Children {
-		collectMembers(&child, self, out)
+		p.collectMembers(&child, self, out)
 	}
 }
 
