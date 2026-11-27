@@ -172,24 +172,38 @@ func readableTitle(candidate string) bool {
 }
 
 // hasWordWithLetters reports at least one token that reads as a word rather than
-// a hash: three or more letters, not a run of hex or digits.
+// a hash: three or more letters, not a run of hex or digits. Letters are counted
+// in any script, because a title can be written in Cyrillic, Greek or Han as
+// easily as in Latin, and a rule that only knows a-z turns every non-English name
+// into an identifier.
 func hasWordWithLetters(line string) bool {
 	for _, token := range strings.Fields(line) {
 		letters := 0
 		digits := 0
 		for _, r := range token {
 			switch {
-			case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z':
+			case unicode.IsLetter(r):
 				letters++
-			case r >= '0' && r <= '9':
+			case unicode.IsDigit(r):
 				digits++
 			}
 		}
+		// A Han or Kana token is short and dense: two characters already say more
+		// than a hex run ever will.
 		if letters >= 3 && letters > digits {
+			return true
+		}
+		if letters >= 2 && digits == 0 && !isLatin(rune(token[0])) {
 			return true
 		}
 	}
 	return false
+}
+
+// isLatin reports a Latin letter, which needs more of them than a denser script
+// before a token counts as a word.
+func isLatin(r rune) bool {
+	return (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z')
 }
 
 // harnessTags are the wrapper elements a harness puts into a user turn. Their
