@@ -768,10 +768,18 @@ func originOf(sess *session) string {
 	if sess.IsSubagent {
 		return "subagent"
 	}
-	if sess.IsFork {
+	if sess.IsFork || isDerivedForkID(sess.ID) {
 		return "fork"
 	}
 	return "root"
+}
+
+// isDerivedForkID reports the id scheme CPA uses for a session it derived by
+// branching a prompt. Such a session has a parent id computed from the point of
+// divergence, and that parent never ran as a conversation, so the two must not be
+// drawn as a delegation.
+func isDerivedForkID(id string) bool {
+	return strings.HasPrefix(id, "lcp:")
 }
 
 func firstModel(sess *session) string {
