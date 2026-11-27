@@ -100,7 +100,7 @@ export const DICT_ES = {
   'tokens.toolCallsTip': 'Qué incluye Llamadas a herramientas:\n• Nombres y argumentos de las llamadas, reproducidos en el prompt y generados en la salida\n• Resultados de herramientas: todo lo que devolvieron\nExcluye las respuestas y el razonamiento del modelo; los esquemas de herramientas se cuentan por separado.',
   'tokens.answersTip': 'Qué incluye Respuestas:\n• Texto de las respuestas reproducido en el prompt\n• Texto de las respuestas generado en la salida\nExcluye el razonamiento, los argumentos de las llamadas a herramientas y los resultados de herramientas.',
   'plugin.title': 'Información del plugin',
-  'plugin.hint': 'El mejor plugin de contexto para DSH ⭐',
+  'plugin.hint': 'De qué se compone el contexto de cada petición',
   'plugin.name': 'Plugin',
   'plugin.github': 'GitHub',
   'plugin.settings': 'Configuración del plugin',

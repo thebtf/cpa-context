@@ -100,7 +100,7 @@ export const DICT_DE = {
   'tokens.toolCallsTip': 'Was Tool-Aufrufe zählt:\n• Aufrufnamen und Argumente, im Prompt erneut verwendet und in der Ausgabe erzeugt\n• Tool-Ergebnisse: alles, was die Tools zurückgegeben haben\nSchließt Modellantworten und Schlussfolgern aus; Tool-Schemas werden separat gezählt.',
   'tokens.answersTip': 'Was Antworten zählt:\n• Antworttext, im Prompt erneut verwendet\n• In der Ausgabe erzeugter Antworttext\nSchließt Schlussfolgern, Tool-Aufrufargumente und Tool-Ergebnisse aus.',
   'plugin.title': 'Plugin-Info',
-  'plugin.hint': 'Das beste DSH-Kontext-Plugin ⭐',
+  'plugin.hint': 'Woraus der Kontext jeder Anfrage besteht',
   'plugin.name': 'Plugin',
   'plugin.github': 'GitHub',
   'plugin.settings': 'Plugin-Einstellungen',

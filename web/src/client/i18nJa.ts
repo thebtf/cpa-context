@@ -100,7 +100,7 @@ export const DICT_JA = {
   'tokens.toolCallsTip': 'ツール呼び出しの集計対象：\n• 呼び出し名と引数：プロンプトで再生された分＋出力で生成された分\n• ツール結果：ツールが返したすべての内容\nモデル応答本文とモデル思考は含みません。ツール定義は別途集計します。',
   'tokens.answersTip': 'モデル応答の集計対象：\n• プロンプトで再生されたモデル応答本文\n• 出力で生成されたモデル応答本文\nモデル思考、ツール呼び出し引数、ツール結果は含みません。',
   'plugin.title': 'プラグイン情報',
-  'plugin.hint': '最高の DSH コンテキストプラグイン ⭐',
+  'plugin.hint': '各リクエストのコンテキスト構成',
   'plugin.name': 'プラグイン',
   'plugin.github': 'GitHub',
   'plugin.settings': 'プラグイン設定',

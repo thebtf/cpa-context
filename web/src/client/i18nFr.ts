@@ -100,7 +100,7 @@ export const DICT_FR = {
   'tokens.toolCallsTip': 'Ce que comptent les appels d’outils :\n• Noms et arguments des appels, rejoués dans l’invite et générés dans la sortie\n• Résultats d’outils : tout ce que les outils ont renvoyé\nExclut les réponses et le raisonnement du modèle ; les schémas d’outils sont comptés séparément.',
   'tokens.answersTip': 'Ce que comptent les réponses :\n• Texte des réponses rejoué dans l’invite\n• Texte des réponses généré dans la sortie\nExclut le raisonnement, les arguments des appels d’outils et les résultats d’outils.',
   'plugin.title': 'Informations sur le plugin',
-  'plugin.hint': 'Le meilleur plugin de contexte DSH ⭐',
+  'plugin.hint': 'Ce que contient le contexte de chaque requête',
   'plugin.name': 'Plugin',
   'plugin.github': 'GitHub',
   'plugin.settings': 'Paramètres du plugin',

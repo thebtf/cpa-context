@@ -326,6 +326,10 @@ export function seedConversationViewVia(sessionId: string, view: string): void {
   } catch {}
 }
 
+// openPluginSettings leads to the place a plugin is configured in CPA: the
+// management control panel, which is where CPA's own plugin list and per-plugin
+// settings live. dsh opened a cordis bundle here; that service does not exist in
+// this host, and a link that silently does nothing is worse than no link.
 export function openPluginSettings(ctx: ClientCtx): boolean {
   try {
     const navigation = asRecord(ctx.get('pluginNavigation'))
@@ -335,7 +339,15 @@ export function openPluginSettings(ctx: ClientCtx): boolean {
       return true
     }
   } catch {}
-  return false
+  try {
+    const here = window.location.pathname
+    const cut = here.indexOf('/v0/resource/')
+    const root = cut >= 0 ? here.slice(0, cut) : ''
+    window.open(root + '/management.html', '_blank', 'noopener')
+    return true
+  } catch {
+    return false
+  }
 }
 
 export function subagentChatAddressOf(address: { parentSessionId: string; childSessionId: string; mode: string }): string {

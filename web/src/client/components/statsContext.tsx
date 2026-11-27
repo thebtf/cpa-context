@@ -65,8 +65,8 @@ export interface SubagentStats {
 export function makeSubagentCost(
   ctx: ClientCtx,
   heads: AgentHeads,
-): (sessionId: string | undefined) => SubagentStats {
-  return function useSubagentCost(sessionId: string | undefined): SubagentStats {
+): (sessionId: string | undefined, teamCount?: number) => SubagentStats {
+  return function useSubagentCost(sessionId: string | undefined, teamCount = 0): SubagentStats {
     const face = useMemo(() => sessionsFaceOf(ctx), [])
     const snapshot = useSessionsSnapshot(face, 250)
     const [landed, setLanded] = useState<ReadonlyMap<string, ContextTimeline>>(new Map())
@@ -74,6 +74,12 @@ export function makeSubagentCost(
       () => subagentCostFoldOf(snapshot, sessionId, landed),
       [snapshot, sessionId, landed],
     )
+    // CPA has no dsh session store, so the fold finds no family and reports zero
+    // however many subagents are running. The plugin's own roster is the
+    // authority there: it is built from the parent links CPA resolves from the
+    // client's headers. A nonzero roster wins, and a zero one leaves the fold
+    // alone so a host that does have the store keeps its own answer.
+    const count = teamCount > 0 ? teamCount : fold.count
     useEffect(() => subscribeInvalidations((event) => {
       if (event.kind !== 'pricing') return
       setLanded((prev) => {
@@ -93,11 +99,11 @@ export function makeSubagentCost(
       if (cold.length > 1) {
         void readHeads(heads, cold).then((reads) => {
           for (const id of cold) land(reads.get(id), id)
-        }).catch(() => {})
+        }).catch(() => { })
         return
       }
       const [only] = cold
-      void heads.headOf(only).then((head) => { land(head, only) }).catch(() => {})
+      void heads.headOf(only).then((head) => { land(head, only) }).catch(() => { })
     }, [fold, heads])
     return { usage: fold.usage, count: fold.count, costRead: fold.costRead }
   }
@@ -157,6 +163,10 @@ function rowJump(fire: () => void): (ev: MouseEvent) => void {
 }
 
 interface StatsContextProps {
+  // subagentCount is the family size the plugin resolved from the client's own
+  // parent links. The ported card read it from a dsh session store that does not
+  // exist here, so it always said zero.
+  subagentCount?: number
   counts: TimelineCounts
   humanInputs?: number
   answers?: number
@@ -318,12 +328,12 @@ function ChipLane(props: ChipLaneProps): ReactElement {
 
 export function makeStatsContext(
   kit: ViewKit,
-  useSubagentCost: (sessionId: string | undefined) => SubagentStats,
+  useSubagentCost: (sessionId: string | undefined, teamCount?: number) => SubagentStats,
 ): (props: StatsContextProps) => ReactElement {
   const { t, fmt } = kit
   return function StatsContext(props: StatsContextProps): ReactElement {
     const currency: CostCurrency = props.locale === 'zh' ? 'cny' : 'usd'
-    const sub = useSubagentCost(props.sessionId)
+    const sub = useSubagentCost(props.sessionId, props.subagentCount)
     const subUsage = sub.usage
     const usage = mergeCostUsage(props.cost, subUsage) ?? undefined
     const ownRead = props.costRead

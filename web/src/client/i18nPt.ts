@@ -100,7 +100,7 @@ export const DICT_PT = {
   'tokens.toolCallsTip': 'O que Chamadas de ferramentas conta:\n• Nomes e argumentos das chamadas, reproduzidos no prompt e gerados na saída\n• Resultados de ferramentas: tudo o que as ferramentas retornaram\nExclui respostas e raciocínio do modelo; os esquemas de ferramentas são contados separadamente.',
   'tokens.answersTip': 'O que Respostas conta:\n• Texto das respostas reproduzido no prompt\n• Texto das respostas gerado na saída\nExclui raciocínio, argumentos de chamadas de ferramentas e resultados de ferramentas.',
   'plugin.title': 'Informações do plugin',
-  'plugin.hint': 'O melhor plugin de contexto para DSH ⭐',
+  'plugin.hint': 'Do que se compõe o contexto de cada pedido',
   'plugin.name': 'Plugin',
   'plugin.github': 'GitHub',
   'plugin.settings': 'Configurações do plugin',

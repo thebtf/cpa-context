@@ -251,7 +251,7 @@ export function agentForestOf(
 
   let root = currentId
   const chain = new Set<string>([currentId])
-  for (;;) {
+  for (; ;) {
     const parent = familyParentOf(rows.get(root))
     if (parent === undefined || !rows.has(parent) || chain.has(parent)) break
     chain.add(parent)

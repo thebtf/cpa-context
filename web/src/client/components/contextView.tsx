@@ -40,6 +40,7 @@ import { makeCommandPager } from '../commandPages'
 import { useCommandLog } from './useCommandLog'
 import { tallyEntriesOf } from '../tallySort'
 import { makePluginInfo } from './pluginInfo'
+import { teamOfProjection } from '../fleetTeam'
 import { makeUpgradeGate } from './upgradeGate'
 import { makeRequestDetail } from './requestDetail'
 import { makeStatsContext, makeSubagentCost } from './statsContext'
@@ -341,6 +342,11 @@ export function makeContextView(
       revealBrowserIfOffscreen(rootRef.current)
     }, [])
     const hasFamilyView = settings.fleetTab() === 'show' || settings.defaultPlacement() !== 'tab'
+    // The family size comes from the team projection, which the plugin builds
+    // from the parent links CPA resolves. The ported card counted subagents from
+    // a dsh session store that does not exist in this host.
+    const teammateCount = teamOfProjection(props, typeof sessionId === 'string' ? sessionId : undefined)
+      ?.members.filter(member => member.role === 'teammate').length ?? 0
     const onTeamClick = useCallback((): void => {
       if (!activateViewTab(t('tab.fleet'))) openContextSidebar(ctx)
     }, [t])
@@ -849,6 +855,7 @@ export function makeContextView(
           <div className="lc-cols lc-head">
             <StatsContext counts={counts} humanInputs={data.humanInputs} answers={data.answers} toolCalls={data.toolCalls}
               files={ioTotals} tools={toolTally} commands={commandBoard}
+              subagentCount={teammateCount}
               cost={data.cost} costRead={data.costRead} locale={activeLocale} sessionId={typeof sessionId === 'string' ? sessionId : undefined}
               onJump={onJump} onTeamClick={hasFamilyView ? onTeamClick : undefined}
               onToolPick={onToolPick}

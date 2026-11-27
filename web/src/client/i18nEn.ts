@@ -100,7 +100,7 @@ export const DICT_EN = {
   'tokens.toolCallsTip': 'What Tool Calls counts:\n• Call names and arguments, replayed in the prompt and generated in the output\n• Tool results: everything the tools returned\nExcludes model replies and reasoning; tool schemas are counted separately.',
   'tokens.answersTip': 'What Answers counts:\n• Reply prose replayed in the prompt\n• Reply prose generated in the output\nExcludes reasoning, tool-call arguments, and tool results.',
   'plugin.title': 'Plugin Info',
-  'plugin.hint': 'The best DSH context plugin ⭐',
+  'plugin.hint': 'What each request carries in its context',
   'plugin.name': 'Plugin',
   'plugin.github': 'GitHub',
   'plugin.settings': 'Plugin Settings',

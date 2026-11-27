@@ -449,7 +449,13 @@ func (s *store) applyToSessionLocked(snap *snapshot) {
 			sess.CacheMissRequests++
 		}
 	}
-	if sess.Title == "" && snap.Title != "" {
+	// A stored title is kept only when it still reads as a name. The journal
+	// outlives the code that wrote it: a title derived before the rules learned to
+	// skip harness wrappers and identifiers is "m45881" or "<acp ...>", and
+	// replaying it would show that forever, because the prompt text needed to
+	// derive a better one is not stored. Dropping it leaves the conversation
+	// unnamed until its next request, which derives a real title.
+	if sess.Title == "" && snap.Title != "" && readableTitle(snap.Title) {
 		sess.Title = snap.Title
 	}
 
