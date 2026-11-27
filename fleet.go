@@ -19,10 +19,26 @@ func (s *store) storeKey(id string) string {
 	if _, ok := s.sessions[id]; ok {
 		return id
 	}
+	// The bare id is what the caller may hold; CPA prefixes the stored key with
+	// where it found the session, and the prefix depends on the wire format of the
+	// request that created it. A parent that arrived over Claude is stored as
+	// claude:<id> even when the child that names it writes header:<id>, so the
+	// lookup tries the whole id and then its last segment.
+	suffix := lastSessionSegment(id)
 	for key := range s.sessions {
-		if strings.HasSuffix(key, ":"+id) {
+		if lastSessionSegment(key) == suffix {
 			return key
 		}
+	}
+	return id
+}
+
+// lastSessionSegment is the id CPA derived the session from, without the prefix
+// that records where it found it. A composed id such as claude:<id>:agent:<name>
+// keeps its agent part, because that names a different agent.
+func lastSessionSegment(id string) string {
+	if cut := strings.Index(id, ":"); cut >= 0 && cut+1 < len(id) {
+		return id[cut+1:]
 	}
 	return id
 }

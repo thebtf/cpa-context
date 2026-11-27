@@ -963,6 +963,12 @@ func (s *store) topOfLocked(start *session) *session {
 	current := start
 	for current.ParentID != "" {
 		parent, ok := s.sessions[current.ParentID]
+		if !ok {
+			// The parent is stored under the prefix of the request that created it,
+			// which can differ from the one the child wrote. The id underneath is
+			// what identifies it.
+			parent, ok = s.byUnprefixedLocked(current.ParentID)
+		}
 		if !ok || visited[parent.ID] {
 			return current
 		}
@@ -970,6 +976,18 @@ func (s *store) topOfLocked(start *session) *session {
 		current = parent
 	}
 	return current
+}
+
+// byUnprefixedLocked finds a conversation by the id CPA derived it from, ignoring
+// the prefix that records which wire format it arrived over.
+func (s *store) byUnprefixedLocked(id string) (*session, bool) {
+	want := lastSessionSegment(id)
+	for key, sess := range s.sessions {
+		if lastSessionSegment(key) == want {
+			return sess, true
+		}
+	}
+	return nil, false
 }
 
 func (s *store) buildNodeLocked(sess *session, seen map[string]bool) *agentNode {
@@ -991,7 +1009,14 @@ func (s *store) buildNodeLocked(sess *session, seen map[string]bool) *agentNode 
 		ParentID:    sess.ParentID,
 	}
 	for _, child := range s.sessions {
-		if child.ParentID != sess.ID || child.ID == sess.ID {
+		if child.ID == sess.ID || child.ParentID == "" {
+			continue
+		}
+		// The parent id is written with the child's own prefix, so a child that
+		// names claude:<id> from a generic request carries header:<id>. Comparing
+		// the strings verbatim loses that family; comparing the id underneath finds
+		// it whatever the two requests' formats were.
+		if lastSessionSegment(child.ParentID) != lastSessionSegment(sess.ID) {
 			continue
 		}
 		if built := s.buildNodeLocked(child, seen); built != nil {
