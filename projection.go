@@ -716,6 +716,10 @@ func millis(t time.Time) int64 {
 
 // sessionRows lists the conversations the dashboard can open.
 func sessionRows(sessions []*session) []map[string]any {
+	known := make(map[string]bool, len(sessions))
+	for _, sess := range sessions {
+		known[sess.ID] = true
+	}
 	rows := make([]map[string]any, 0, len(sessions))
 	for _, sess := range sessions {
 		row := map[string]any{
@@ -735,8 +739,18 @@ func sessionRows(sessions []*session) []map[string]any {
 			"inputTokens":       sess.InputTokens,
 			"outputTokens":      sess.OutputTokens,
 		}
-		if sess.ParentID != "" {
-			row["parentId"] = sess.ParentID
+		if parent := sess.ParentID; parent != "" {
+			// CPA prefixes a parent with the child's transport. The graph needs the
+			// actual row key when the same instance also observed the other transport.
+			if sess.IsSubagent && !known[parent] {
+				prefix, id, _ := strings.Cut(parent, ":")
+				if prefix == "claude" && known["header:"+id] && sess.ID != "header:"+id {
+					parent = "header:" + id
+				} else if prefix == "header" && known["claude:"+id] && sess.ID != "claude:"+id {
+					parent = "claude:" + id
+				}
+			}
+			row["parentId"] = parent
 		}
 		// The fleet reads identity from these fields: it names an agent by its own
 		// label and decides what a conversation is from the two flags. A row without

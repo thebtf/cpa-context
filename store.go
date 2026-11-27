@@ -369,7 +369,7 @@ func (s *store) recordUsage(u usage) {
 	snap.AgentName = firstNonEmpty(snap.AgentName, u.AgentName)
 	snap.IsSubagent = snap.IsSubagent || u.IsSubagent
 	snap.IsFork = snap.IsFork || u.IsFork
-	snap.Compaction = u.Compaction
+	snap.Compaction = snap.Compaction || u.Compaction
 	if snap.CompletedAt.IsZero() {
 		snap.CompletedAt = time.Now()
 	}
@@ -399,6 +399,18 @@ func (s *store) recordUsage(u usage) {
 	s.applyToSessionLocked(snap)
 	s.rememberLocked(snap)
 	s.journal.appendRequest(snap)
+}
+
+// CPA's Claude decoder sets the subagent role and parent but not the flag.
+// Normalize here so live usage and journal replay feed the same family graph.
+func isDelegation(snap *snapshot) bool {
+	if snap.IsSubagent {
+		return true
+	}
+	return snap.ClientType == "claude" && snap.AgentName == "subagent" &&
+		snap.SessionID != "" && snap.ParentSession != "" &&
+		lastSessionSegment(snap.SessionID) != lastSessionSegment(snap.ParentSession) &&
+		!snap.IsFork && !snap.Compaction && !isDerivedForkID(snap.SessionID)
 }
 
 // applyToSessionLocked folds one finished snapshot into its session aggregate.
@@ -474,7 +486,7 @@ func (s *store) applyToSessionLocked(snap *snapshot) {
 	if sess.AgentName == "" {
 		sess.AgentName = snap.AgentName
 	}
-	sess.IsSubagent = sess.IsSubagent || snap.IsSubagent
+	sess.IsSubagent = sess.IsSubagent || isDelegation(snap)
 	sess.IsFork = sess.IsFork || snap.IsFork
 	if snap.Compaction {
 		sess.Compactions++
