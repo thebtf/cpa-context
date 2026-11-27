@@ -57,6 +57,11 @@ func collectMembers(node *agentNode, self string, out *[]map[string]any) {
 	if node.Role == "lead" || (!node.IsSubagent && node.ParentID == "") {
 		role = "lead"
 	}
+	// A fork is not a teammate. CPA labels an lcp session as a fork of the point
+	// where the prompt diverged, and that parent is a computed id that never
+	// existed as a conversation. Listing that under the fleet's roster would claim
+	// a delegation that never happened, so a fork is reported as the fork it is.
+	fork := isForkSession(node)
 	name := firstNonEmpty(node.AgentName, node.Label, node.ID)
 	phase := "active"
 	if node.Requests == 0 {
@@ -68,6 +73,9 @@ func collectMembers(node *agentNode, self string, out *[]map[string]any) {
 		"role":  role,
 		"phase": phase,
 	}
+	if fork {
+		row["role"] = "fork"
+	}
 	if node.ParentID != "" {
 		// The client groups by parent, so it needs the link even when the parent has
 		// no row of its own.
@@ -77,6 +85,19 @@ func collectMembers(node *agentNode, self string, out *[]map[string]any) {
 	for _, child := range node.Children {
 		collectMembers(&child, self, out)
 	}
+}
+
+// isForkSession reports a conversation CPA derived by branching a prompt. The
+// lcp prefix is the id scheme CPA uses for that derivation, and a fork's parent is
+// the divergence point, not an agent that ran.
+func isForkSession(node *agentNode) bool {
+	if node == nil {
+		return false
+	}
+	if node.IsFork {
+		return true
+	}
+	return strings.HasPrefix(node.ID, "lcp:")
 }
 
 // subagentCatalog lists the delegations the newest prompt of a conversation
