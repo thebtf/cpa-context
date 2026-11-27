@@ -42,6 +42,11 @@ func TestAFamilyLinksAcrossFormats(t *testing.T) {
 	// The child points at header:family-root, while the parent row is
 	// claude:family-root. Asking for the family from the parent must find the
 	// child, and asking from the child must reach the parent.
+	for _, row := range sessionRows(p.store.snapshotSessions()) {
+		if row["id"] == "header:family-kid" && row["parentId"] != "claude:family-root" {
+			t.Errorf("the graph received parentId %q instead of the visible parent row", row["parentId"])
+		}
+	}
 	fromParent := p.teamProjection("header:family-root")
 	if fromParent == nil {
 		t.Fatal("no family from the parent side")

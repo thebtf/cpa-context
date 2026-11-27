@@ -49,3 +49,48 @@ func TestRowOriginRecognisesADerivedFork(t *testing.T) {
 		t.Errorf("origin = %q, want root", origin)
 	}
 }
+
+func TestClaudeDelegationOnJournalReplay(t *testing.T) {
+	path := filepath.Join(t.TempDir(), stateFileName)
+	j := openJournal(path)
+	j.appendRequest(&snapshot{
+		TraceID: "child-request", SessionID: "claude:child", ParentSession: "claude:parent",
+		ClientType: "claude", AgentName: "subagent", StartedAt: timeNow(), Model: "m",
+	})
+	j.close()
+	p := newPlugin(nil)
+	p.attachJournal(path)
+	defer p.shutdown()
+	rows := sessionRows(p.store.snapshotSessions())
+	if len(rows) != 1 || rows[0]["origin"] != "subagent" || rows[0]["isSubagent"] != true || rows[0]["parentId"] != "claude:parent" {
+		t.Fatalf("replayed child: %v", rows)
+	}
+}
+
+func TestClaudeDelegationRequiresAnExplicitSignal(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		change func(*snapshot)
+		want string
+	}{
+		{"delegation", func(*snapshot) {}, "subagent"},
+		{"missing parent", func(s *snapshot) { s.ParentSession = "" }, "root"},
+		{"self parent", func(s *snapshot) { s.ParentSession = s.SessionID }, "root"},
+		{"compaction", func(s *snapshot) { s.Compaction = true }, "root"},
+		{"explicit fork", func(s *snapshot) { s.IsFork = true }, "fork"},
+		{"derived fork", func(s *snapshot) { s.SessionID = "lcp:v1:abcdef" }, "fork"},
+		{"other client", func(s *snapshot) { s.ClientType = "generic" }, "root"},
+		{"no agent role", func(s *snapshot) { s.AgentName = "main" }, "root"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			snap := &snapshot{SessionID: "claude:kid", ParentSession: "claude:lead", ClientType: "claude", AgentName: "subagent"}
+			tc.change(snap)
+			s := newStore(defaultLimits())
+			s.applyToSessionLocked(snap)
+			row := sessionRows(s.snapshotSessions())[0]
+			if row["origin"] != tc.want || (row["isSubagent"] == true) != (tc.want == "subagent") {
+				t.Errorf("inconsistent origin/flag: %v", row)
+			}
+		})
+	}
+}

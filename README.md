@@ -77,6 +77,12 @@ plugins:
 Open `/v0/resource/plugins/cpa-context/dashboard` and enter the management key.
 The page polls while it is visible, so it stays current without a reload.
 
+### Link oh-my-pi tasks to their parent
+
+Copy [`extensions/omp-task-lineage.ts`](extensions/omp-task-lineage.ts) into the active omp profile's `extensions/` directory. No environment variables, address list or management key are needed. The extension checks HTTP bases already configured in the active profile and the selected task model. It supports OpenAI Chat, OpenAI Responses and Anthropic Messages. It makes a short unauthenticated `GET` to the CPA root, preserving any reverse-proxy path prefix. If the root is blocked, redirects or does not identify itself as CLIProxyAPI, model traffic continues without the extra parent identity.
+
+Each CPA stores its own traffic. A child on a second instance can identify its parent even when that instance has no row for the parent. The dashboards do not combine databases.
+
 ## Storage
 
 Observations are written to SQLite in `data_dir` and replayed at startup, so a
