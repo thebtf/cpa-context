@@ -118,10 +118,17 @@ function catalogMemberOf(entry: unknown): FleetTeamMember | null {
   return teammateOf(rec.id, rec.name, 'active')
 }
 
+// teamOfProjection reads two projection keys, and each read is a hook. Both must
+// run on every render: React counts hooks by call order, so a second hook placed
+// after an early return is a different number of hooks the moment the first value
+// arrives, and the component throws "Cannot read properties of undefined
+// (reading 'length')" from inside the dispatcher. The reads happen first and the
+// decision comes after.
 export function teamOfProjection(props: SessionStandardProps, sessionId: string | undefined): FleetTeam | null {
   const value = projectionOf(props, 'agentTeam', read => asRecord(read))
+  const catalog = projectionOf(props, 'subagentCatalog', () => null as unknown)
   if (value === null) return null
-  return teamOf(value, projectionOf(props, 'subagentCatalog', read => asRecord(read)), sessionId)
+  return teamOf(value, catalog, sessionId)
 }
 
 export function teamMemberOf(team: FleetTeam | null, sessionId: string): FleetTeamMember | null {
