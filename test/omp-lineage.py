@@ -188,7 +188,17 @@ def run_case(name, omp, cpa, library, tmp, out, ui):
             assert i==int(split and k=='CHILDALPHA'),(name,k,i)
             assert not any(s in db for idx,db in enumerate(rows) if idx!=i),(name,k,'unexpected database')
             expected=None if negative else ids.get(EXPECTED[k]);row=rows[i][s]; got=row.get('parentId')
-            assert p==expected and (got.partition(':')[2] if got else None)==expected,(name,k,p,got,expected)
+            assert p==expected,(name,k,p,expected)
+            if split:
+                # The parent lives in the other instance's database, so only the id
+                # CPA derived from can be compared here.
+                assert (got.partition(':')[2] if got else None)==expected,(name,k,p,got,expected)
+            else:
+                # Both rows are in one database: the graph must name the row the
+                # dashboard shows, so a transport prefix that disagrees is a broken
+                # edge even when the id behind it matches.
+                visible=None if expected is None else rows[i][ids[EXPECTED[k]]]['id']
+                assert got==visible,(name,k,p,got,visible)
             assert row['origin']==('subagent' if expected else 'root'),(name,k,row['origin'])
             if mixed: assert ('/messages' in route)==(k=='CHILDALPHA'),(name,k,route)
         if not negative and not split:
