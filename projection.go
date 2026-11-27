@@ -738,6 +738,22 @@ func sessionRows(sessions []*session) []map[string]any {
 		if sess.ParentID != "" {
 			row["parentId"] = sess.ParentID
 		}
+		// The fleet reads identity from these fields: it names an agent by its own
+		// label and decides what a conversation is from the two flags. A row without
+		// them is an anonymous root, so every family looked like one agent called
+		// "main" no matter what the traffic said.
+		if sess.AgentName != "" {
+			row["agentName"] = sess.AgentName
+		}
+		if sess.ClientType != "" {
+			row["clientType"] = sess.ClientType
+		}
+		if sess.IsSubagent {
+			row["isSubagent"] = true
+		}
+		if sess.IsFork {
+			row["isFork"] = true
+		}
 		rows = append(rows, row)
 	}
 	sort.SliceStable(rows, func(i, j int) bool {
