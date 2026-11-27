@@ -54,6 +54,13 @@ export interface PortConfig {
   key(): string
   /** Which session the page opened with, if any. */
   initialSession?: string
+  /**
+   * onRejected runs once when the proxy refuses the key. A stored key can be
+   * revoked, rotated, or belong to another host after a move, and the page has to
+   * stop retrying it and ask for a new one. Without this the dashboard polls every
+   * few seconds with a dead key, and CPA counts each attempt toward its ban.
+   */
+  onRejected?: (status: number) => void
 }
 
 const EMPTY_SESSIONS: SessionTableRow[] = []
@@ -63,6 +70,14 @@ async function readJSON(res: Response): Promise<unknown> {
   if (!res.ok) throw new Error(`${res.status} ${res.statusText}`)
   const text = await res.text()
   return text === '' ? null : JSON.parse(text)
+}
+
+// rejectionOf reports the status when a response means "this key is not accepted".
+// Only 401 and 403 count: any other failure is a network or config problem that a
+// new key would not fix.
+function rejectionOf(res: Response): number {
+  if (res.status === 401 || res.status === 403) return res.status
+  return 0
 }
 
 export function makePortStore(cfg: PortConfig): PortStore {
@@ -88,10 +103,23 @@ export function makePortStore(cfg: PortConfig): PortStore {
     notify()
   }
 
+  const reject = (status: number): void => {
+    if (status === 0) return
+    setRows(EMPTY_SESSIONS)
+    bundle = EMPTY_BUNDLE
+    cfg.onRejected?.(status)
+  }
+
   const fetchSessions = async (): Promise<void> => {
-    const body = await readJSON(await fetch(cfg.apiBase + `/cpa-context/sessions?_=${Date.now()}`, {
+    const res = await fetch(cfg.apiBase + `/cpa-context/sessions?_=${Date.now()}`, {
       headers: { Authorization: 'Bearer ' + cfg.key() },
-    })) as { sessions?: SessionTableRow[] } | null
+    })
+    const refused = rejectionOf(res)
+    if (refused !== 0) {
+      reject(refused)
+      return
+    }
+    const body = await readJSON(res) as { sessions?: SessionTableRow[] } | null
     setRows(body?.sessions ?? EMPTY_SESSIONS)
   }
 
@@ -100,9 +128,15 @@ export function makePortStore(cfg: PortConfig): PortStore {
     if (existing !== undefined) return existing
     const run = (async () => {
       const query = '?session=' + encodeURIComponent(id) + '&_=' + Date.now()
-      const body = await readJSON(await fetch(cfg.apiBase + '/cpa-context/session' + query, {
+      const res = await fetch(cfg.apiBase + '/cpa-context/session' + query, {
         headers: { Authorization: 'Bearer ' + cfg.key() },
-      })) as ProjectionBundle | null
+      })
+      const refused = rejectionOf(res)
+      if (refused !== 0) {
+        reject(refused)
+        return
+      }
+      const body = await readJSON(res) as ProjectionBundle | null
       setBundle(id, body ?? EMPTY_BUNDLE)
     })()
       .catch((err: unknown) => {

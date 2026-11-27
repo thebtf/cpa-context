@@ -43,10 +43,37 @@ function apiBase(): string {
 const keyInput = document.getElementById('key') as HTMLInputElement | null
 const refreshButton = document.getElementById('refresh') as HTMLButtonElement | null
 
+// forgetStoredKey drops the remembered key. It runs when the proxy refuses it,
+// which happens after a rotation, a revoke, or a move to a host with a different
+// secret. Keeping a rejected key would leave the page polling with it every few
+// seconds, and CPA counts failed attempts toward an IP ban.
+const STORED_KEY = 'cpa-context.management-key'
+
+function forgetStoredKey(): void {
+  try {
+    localStorage.removeItem(STORED_KEY)
+    sessionStorage.removeItem(STORED_KEY)
+  } catch {
+    // Nothing to do: the value stays for this view only.
+  }
+}
+
+// requestKey clears the field and focuses it, so the next thing the operator does
+// is type the new key. The page says why instead of silently showing no data.
+function requestKey(): void {
+  forgetStoredKey()
+  if (keyInput === null) return
+  keyInput.value = ''
+  keyInput.placeholder = 'key refused — enter a new one'
+  keyInput.style.borderColor = '#c2564b'
+  keyInput.focus()
+}
+
 const store = makePortStore({
   apiBase: apiBase(),
   key: () => keyInput?.value ?? '',
   initialSession: new URLSearchParams(window.location.search).get('session') ?? '',
+  onRejected: () => { requestKey() },
 })
 
 // The ported browser fetches one step's header and content through this face.
@@ -64,8 +91,6 @@ keyInput?.addEventListener('keydown', event => {
 // comes back, which is exactly the retyping this is meant to end. The key is the
 // same one the management panel needs, and the page it is stored for belongs to
 // this proxy, so it never travels to another origin.
-const STORED_KEY = 'cpa-context.management-key'
-
 function readStoredKey(): string {
   try {
     return localStorage.getItem(STORED_KEY) ?? sessionStorage.getItem(STORED_KEY) ?? ''
@@ -93,7 +118,10 @@ if (keyInput !== null) {
   }
   const remember = (): void => {
     const value = keyInput.value.trim()
-    if (value !== '') storeKey(value)
+    if (value === '') return
+    storeKey(value)
+    keyInput.placeholder = 'management key'
+    keyInput.style.borderColor = ''
   }
   keyInput.addEventListener('change', remember)
   // Enter submits without leaving the field, and a change event does not fire in
