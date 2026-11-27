@@ -42,14 +42,20 @@ func TestReconfigureDuringTrafficIsSafe(t *testing.T) {
 
 	// The host reconfigures repeatedly.
 	wg.Add(1)
+	// Directories are created here, on the test goroutine: t.TempDir registers a
+	// cleanup that runs at the end of the test, and calling it from a goroutine
+	// that is still writing leaves the journal closing after the removal starts.
+	dirs := make([]string, 20)
+	for i := range dirs {
+		dirs[i] = t.TempDir()
+	}
 	go func() {
 		defer wg.Done()
 		// Several data directories, so the journal and the price catalog are
 		// written while the request path reads them. Each previous handle must be
 		// released by the plugin itself, which is what this exercises.
-		for i := 0; i < 20; i++ {
-			dir := t.TempDir()
-			yaml := "enabled: true\ndata_dir: " + dir + "\n"
+		for i := 0; i < len(dirs); i++ {
+			yaml := "enabled: true\ndata_dir: " + dirs[i] + "\n"
 			raw, _ := json.Marshal(map[string]any{"config_yaml": []byte(yaml)})
 			p.handle("plugin.reconfigure", raw)
 		}

@@ -70,17 +70,40 @@ type composition struct {
 	// Title is the first user message, trimmed to a readable length. CPA resolves
 	// session ids but not titles, so the conversation has to name itself.
 	Title string
+	// seenPrompt accumulates the user's own text while no block has named the
+	// conversation yet. It exists only until a title is found.
+	seenPrompt string
 }
 
 // maxTitleRunes keeps a card header to one line without cutting mid-word.
 const maxTitleRunes = 90
 
-// setTitle records the conversation title from the first user message.
+// setTitle records the conversation title from the user's own text.
+//
+// A prompt arrives as several blocks, and the first one is often not the one
+// that names the work: an id wrapper, a pasted file, a reminder. The title is
+// therefore taken from the first block that yields a readable name, and a later
+// block is ignored once one is found.
 func (c *composition) setTitle(text string) {
 	if c.Title != "" {
 		return
 	}
 	c.Title = titleFromText(text)
+	if c.Title == "" {
+		// Keep the whole prompt: a later block may still name the work, and the
+		// most descriptive line across the message is a better title than the
+		// session id.
+		c.seenPrompt += "\n\n" + text
+	}
+}
+
+// finishTitle fills a title that no single block produced, using the whole user
+// text collected across the message.
+func (c *composition) finishTitle() {
+	if c.Title != "" || c.seenPrompt == "" {
+		return
+	}
+	c.Title = titleFromText(c.seenPrompt)
 }
 
 // titleFromText picks the line of a prompt that best names it.
@@ -93,16 +116,80 @@ func (c *composition) setTitle(text string) {
 // caller falls back to the session id.
 func titleFromText(text string) string {
 	cleaned := withoutHarnessBlocks(withoutCodeBlocks(text))
-	for _, paragraph := range splitParagraphs(cleaned) {
-		for _, line := range strings.Split(paragraph, "\n") {
-			candidate := stripMarkdownPrefix(stripTags(line))
-			if !hasWords(candidate) || looksLikeHarnessTag(candidate) || looksLikeRoleLabel(candidate) {
-				continue
-			}
-			return shortenTitle(candidate)
-		}
+	if candidate, ok := nameFromFirstParagraph(cleaned); ok {
+		return shortenTitle(candidate)
+	}
+	// Nothing in the opening paragraph named the work: a prompt can begin with a
+	// pasted block, an id, or a table. The most descriptive line anywhere in the
+	// prompt is a better answer than the session id.
+	if candidate, ok := bestLineOf(cleaned); ok {
+		return shortenTitle(candidate)
 	}
 	return ""
+}
+
+// nameFromFirstParagraph takes the first usable line of the opening paragraph,
+// which is where a person states what they want.
+func nameFromFirstParagraph(text string) (string, bool) {
+	for _, paragraph := range splitParagraphs(text) {
+		for _, line := range strings.Split(paragraph, "\n") {
+			candidate := stripMarkdownPrefix(stripTags(line))
+			if !readableTitle(candidate) {
+				continue
+			}
+			return candidate, true
+		}
+	}
+	return "", false
+}
+
+// bestLineOf picks the line that says the most about the work: the one with the
+// most words, preferring a sentence over a fragment.
+func bestLineOf(text string) (string, bool) {
+	best := ""
+	bestWords := 0
+	for _, line := range strings.Split(text, "\n") {
+		candidate := stripMarkdownPrefix(stripTags(line))
+		if !readableTitle(candidate) {
+			continue
+		}
+		words := len(strings.Fields(candidate))
+		if words > bestWords {
+			best, bestWords = candidate, words
+		}
+	}
+	return best, bestWords > 0
+}
+
+// readableTitle reports a line that can name a conversation. An identifier is
+// not a name: "m44881" or "abc123def" carries no meaning, while a line with a
+// few real words does.
+func readableTitle(candidate string) bool {
+	if !hasWords(candidate) || looksLikeHarnessTag(candidate) || looksLikeRoleLabel(candidate) {
+		return false
+	}
+	return hasWordWithLetters(candidate)
+}
+
+// hasWordWithLetters reports at least one token that reads as a word rather than
+// a hash: three or more letters, not a run of hex or digits.
+func hasWordWithLetters(line string) bool {
+	for _, token := range strings.Fields(line) {
+		letters := 0
+		digits := 0
+		for _, r := range token {
+			switch {
+			case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z':
+				letters++
+			case r >= '0' && r <= '9':
+				digits++
+			}
+		}
+		if letters >= 3 && letters > digits {
+			return true
+		}
+	}
+	return false
 }
 
 // harnessTags are the wrapper elements a harness puts into a user turn. Their
@@ -391,6 +478,7 @@ func parseClaude(body []byte) *composition {
 		c.add(item{Category: CatTools, Label: tool.Name, Detail: tool.Description, Text: text, Chars: len(text)})
 		c.ToolCount++
 	}
+	c.finishTitle()
 	return c
 }
 
@@ -567,6 +655,7 @@ func parseOpenAIChat(body []byte) *composition {
 		c.add(item{Category: CatTools, Label: tool.Function.Name, Detail: tool.Function.Description, Text: text, Chars: len(text)})
 		c.ToolCount++
 	}
+	c.finishTitle()
 	return c
 }
 
@@ -735,6 +824,7 @@ func parseOpenAIResponses(body []byte) *composition {
 		c.add(item{Category: CatTools, Label: tool.Name, Detail: tool.Description, Text: text, Chars: len(text)})
 		c.ToolCount++
 	}
+	c.finishTitle()
 	return c
 }
 
@@ -822,6 +912,7 @@ func parseGemini(body []byte) *composition {
 	}
 	c.MaxTokens = payload.GenerationConfig.MaxOutputTokens
 	c.Stream = payload.GenerationConfig.Stream
+	c.finishTitle()
 	return c
 }
 

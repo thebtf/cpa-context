@@ -1,9 +1,9 @@
 package main
 
 import (
-	"strconv"
 	"encoding/json"
 	"sort"
+	"strconv"
 	"time"
 )
 
@@ -101,13 +101,17 @@ func (p *plugin) fleetAnswer(raw []byte) any {
 	return clientEnvelope(summary)
 }
 
-// fleetMember renders one agent's own record: who it is, what it was asked, and
-// the delegations its prompt shows.
+// fleetMember renders one agent's own record: who it is, what it was asked, the
+// delegations its prompt shows, and the roster of the family it belongs to.
+//
+// The client sizes a payload by summing name and description lengths over the
+// roster without checking either field, so every member it receives must carry
+// both as strings. An absent description is an empty string here, never a
+// missing key.
 func (p *plugin) fleetMember(sessionID string, history bool) (map[string]any, bool) {
-	// The delegation list comes from the prompt items, which the next request
-	// of this conversation clears. Read them under the lock and keep only what
-	// the answer needs, so nothing is touched after the lock is released.
-	delegations := make([]map[string]any, 0)
+	delegations := p.delegationsOf(sessionID)
+	roster := p.rosterOf(sessionID)
+
 	var (
 		title    string
 		model    string
@@ -116,27 +120,10 @@ func (p *plugin) fleetMember(sessionID string, history bool) (map[string]any, bo
 		replyAt  time.Time
 		count    int
 	)
-	ok := p.store.withSnapshots(sessionID, func(snaps []*snapshot) {
+	ok := p.store.withSnapshots(p.store.storeKey(sessionID), func(snaps []*snapshot) {
 		count = len(snaps)
 		newest := snaps[len(snaps)-1]
 		title, model, provider = newest.Title, newest.Model, newest.Provider
-		seen := map[string]bool{}
-		for _, it := range newest.Items {
-			if it.Category != CatToolCall || !isAgentTool(it.Tool) {
-				continue
-			}
-			target := firstNonEmpty(it.Target, it.Label)
-			if target == "" || seen[target] {
-				continue
-			}
-			seen[target] = true
-			delegations = append(delegations, map[string]any{
-				"seq":  len(delegations) + 1,
-				"time": millis(newest.StartedAt),
-				"to":   target,
-				"mode": "unknown",
-			})
-		}
 		if len(snaps) > 1 {
 			previous := snaps[len(snaps)-2]
 			reply, replyAt = previous.Title, previous.CompletedAt
@@ -149,6 +136,7 @@ func (p *plugin) fleetMember(sessionID string, history bool) (map[string]any, bo
 	out := map[string]any{
 		"messages":    []any{},
 		"delegations": delegations,
+		"roster":      roster,
 		"truncated":   false,
 	}
 	if title != "" {
@@ -169,6 +157,77 @@ func (p *plugin) fleetMember(sessionID string, history bool) (map[string]any, bo
 	}
 	_ = history
 	return out, true
+}
+
+// delegationsOf lists the agent calls the newest prompt of a conversation shows.
+func (p *plugin) delegationsOf(sessionID string) []map[string]any {
+	out := make([]map[string]any, 0)
+	seen := map[string]bool{}
+	p.store.withSnapshots(p.store.storeKey(sessionID), func(snaps []*snapshot) {
+		newest := snaps[len(snaps)-1]
+		for _, it := range newest.Items {
+			if it.Category != CatToolCall || !isAgentTool(it.Tool) {
+				continue
+			}
+			target := firstNonEmpty(it.Target, it.Label)
+			if target == "" || seen[target] {
+				continue
+			}
+			seen[target] = true
+			out = append(out, map[string]any{
+				"seq":  len(out) + 1,
+				"time": millis(newest.StartedAt),
+				"to":   target,
+				"mode": "unknown",
+			})
+		}
+	})
+	return out
+}
+
+// rosterOf renders the agents of this conversation's family. Both fields the
+// client reads are always present: name is the agent's own label and description
+// is the work it was given, read from its newest prompt, or an empty string when
+// that is not known.
+func (p *plugin) rosterOf(sessionID string) []map[string]any {
+	key := p.store.storeKey(sessionID)
+	family := p.store.agentFamily(key)
+	if family == nil {
+		return []map[string]any{}
+	}
+	out := make([]map[string]any, 0, 8)
+	var walk func(node *agentNode)
+	walk = func(node *agentNode) {
+		if node == nil {
+			return
+		}
+		out = append(out, map[string]any{
+			"name":        firstNonEmpty(node.AgentName, node.Label, node.ID),
+			"description": p.memberDescription(node.ID),
+			"context":     "fresh",
+		})
+		for index := range node.Children {
+			walk(&node.Children[index])
+		}
+	}
+	walk(family)
+	return out
+}
+
+// memberDescription is what an agent was asked to do: the title of its newest
+// prompt, which is the same text the session card shows. A type name such as
+// "generic" says nothing, so it is only used when no prompt was observed.
+func (p *plugin) memberDescription(id string) string {
+	description := ""
+	p.store.withSnapshots(id, func(snaps []*snapshot) {
+		description = snaps[len(snaps)-1].Title
+	})
+	if description == "" {
+		if sess := p.store.snapshotSession(id); sess != nil {
+			description = sess.Title
+		}
+	}
+	return description
 }
 
 func isAgentTool(tool string) bool {
