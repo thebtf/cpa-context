@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"sort"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -202,7 +203,7 @@ func (p *plugin) rosterOf(sessionID string) []map[string]any {
 			return
 		}
 		out = append(out, map[string]any{
-			"name":        firstNonEmpty(node.AgentName, node.Label, node.ID),
+			"name":        p.memberName(node),
 			"description": p.memberDescription(node.ID),
 			"context":     "fresh",
 		})
@@ -212,6 +213,65 @@ func (p *plugin) rosterOf(sessionID string) []map[string]any {
 	}
 	walk(family)
 	return out
+}
+
+// memberName is what the roster calls an agent. It prefers the agent's own label,
+// then the project, then the conversation's title. A technical id is the last
+// resort and only when it is short enough to read: a hash is not a name, and the
+// operator who saw one in the list had no way to tell what it was.
+//
+// A derived session has no agent label at all, so it is named for what it is: a
+// branch of another conversation.
+func (p *plugin) memberName(node *agentNode) string {
+	if node == nil {
+		return ""
+	}
+	if name := firstNonEmpty(node.AgentName, node.Label); name != "" {
+		return name
+	}
+	if title := p.memberTitle(node.ID); title != "" {
+		return title
+	}
+	if isDerivedForkID(node.ID) {
+		return "branch"
+	}
+	if len(node.ID) <= 40 && !looksLikeHash(node.ID) {
+		return node.ID
+	}
+	return "conversation"
+}
+
+// memberTitle is the conversation's own first line, the same text its card shows.
+func (p *plugin) memberTitle(id string) string {
+	title := ""
+	p.store.withSnapshots(id, func(snaps []*snapshot) {
+		title = snaps[len(snaps)-1].Title
+	})
+	if title == "" {
+		if sess := p.store.snapshotSession(id); sess != nil {
+			title = sess.Title
+		}
+	}
+	return title
+}
+
+// looksLikeHash reports an id that is only a machine token: a long run of hex or
+// a scheme prefix followed by one.
+func looksLikeHash(id string) bool {
+	body := id
+	if cut := strings.LastIndex(id, ":"); cut >= 0 {
+		body = id[cut+1:]
+	}
+	if len(body) < 12 {
+		return false
+	}
+	hex := 0
+	for _, r := range body {
+		if (r >= '0' && r <= '9') || (r >= 'a' && r <= 'f') {
+			hex++
+		}
+	}
+	return hex == len([]rune(body))
 }
 
 // memberDescription is what an agent was asked to do: the title of its newest

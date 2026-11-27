@@ -100,8 +100,14 @@ export function agentRowOf(value: unknown): AgentRow | null {
   return row
 }
 
+// familyParentOf is the edge the family graph walks upward. A derived session
+// carries a parent too: CPA computes it from the point where the prompt diverged.
+// Ignoring it left every fork as its own forest, so a list where half the rows are
+// forks drew one agent per row and never a family.
 export function familyParentOf(row: AgentRow | undefined): string | undefined {
-  return row !== undefined && row.origin === 'subagent' ? row.parentId : undefined
+  if (row === undefined) return undefined
+  if (row.origin !== 'subagent' && row.origin !== 'fork') return undefined
+  return row.parentId
 }
 
 export function modelLabelOf(model: string | undefined, effort: string | undefined): string | undefined {
