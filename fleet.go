@@ -47,9 +47,12 @@ func collectMembers(node *agentNode, self string, out *[]map[string]any) {
 	if node == nil {
 		return
 	}
-	// A node that stands in for a parent with no requests is the lead of its
-	// family: its children are the teammates, and the roster has to say so or the
-	// view shows one unattached agent per child.
+	// The role says what the agent is, not where the tree starts. A conversation
+	// that names a parent, when that parent never passed through this proxy, is
+	// still a subagent: calling it the lead would relabel every delegated run as
+	// the main one, and on the traffic this was measured against there were 48
+	// such children and not one shared parent, so nothing would ever read as a
+	// subagent at all.
 	role := "teammate"
 	if node.Role == "lead" || (!node.IsSubagent && node.ParentID == "") {
 		role = "lead"
@@ -65,8 +68,10 @@ func collectMembers(node *agentNode, self string, out *[]map[string]any) {
 		"role":  role,
 		"phase": phase,
 	}
-	if node.ID == self {
-		row["role"] = "lead"
+	if node.ParentID != "" {
+		// The client groups by parent, so it needs the link even when the parent has
+		// no row of its own.
+		row["parentId"] = node.ParentID
 	}
 	*out = append(*out, row)
 	for _, child := range node.Children {

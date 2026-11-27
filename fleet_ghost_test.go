@@ -39,6 +39,9 @@ func TestFamilyWithoutALeadRequestKeepsItsMembers(t *testing.T) {
 		t.Fatalf("%d members, want the lead and its two children", len(members))
 	}
 
+	// Every member here named the same absent parent, so every member is a
+	// teammate. The family is still drawn together: the siblings are the two rows,
+	// and the tree has a top, but that top is not a lead it never was.
 	leads, teammates := 0, 0
 	for _, member := range members {
 		switch member["role"] {
@@ -48,11 +51,11 @@ func TestFamilyWithoutALeadRequestKeepsItsMembers(t *testing.T) {
 			teammates++
 		}
 	}
-	if leads != 1 {
-		t.Errorf("%d leads, want exactly one", leads)
+	if leads != 0 {
+		t.Errorf("%d leads, want none: every member named a parent", leads)
 	}
-	if teammates != 1 {
-		t.Errorf("%d teammates, want the sibling as a teammate", teammates)
+	if teammates != 2 {
+		t.Errorf("%d teammates, want both siblings", teammates)
 	}
 }
 

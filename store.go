@@ -931,7 +931,9 @@ func (s *store) agentFamily(id string) *agentNode {
 			if node == nil {
 				return nil
 			}
-			node.Role = "lead"
+			// The node is the top of the tree the view can draw, but it is not the
+			// lead: it named a parent that never passed through this proxy, so what
+			// it is, is a subagent. Only the top-of-tree position is virtual.
 			node.Virtual = root.ParentID
 			for id, sibling := range s.sessions {
 				if id == root.ID || sibling.ParentID != root.ParentID {
