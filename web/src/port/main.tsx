@@ -57,17 +57,49 @@ refreshButton?.addEventListener('click', () => { void store.refresh() })
 keyInput?.addEventListener('keydown', event => {
   if (event.key === 'Enter') void store.refresh()
 })
-// The key survives the page reload so the dashboard is usable without retyping
-// it, and the first load can run as soon as the page opens.
+// The key is remembered so the dashboard opens without typing it again.
+//
+// It goes in localStorage rather than sessionStorage: a session store dies with
+// the tab, and the plugin opens in a fresh iframe or tab every time the operator
+// comes back, which is exactly the retyping this is meant to end. The key is the
+// same one the management panel needs, and the page it is stored for belongs to
+// this proxy, so it never travels to another origin.
 const STORED_KEY = 'cpa-context.management-key'
+
+function readStoredKey(): string {
+  try {
+    return localStorage.getItem(STORED_KEY) ?? sessionStorage.getItem(STORED_KEY) ?? ''
+  } catch {
+    return ''
+  }
+}
+
+function storeKey(value: string): void {
+  try {
+    localStorage.setItem(STORED_KEY, value)
+    // The old session copy would shadow nothing but would linger after a clear.
+    sessionStorage.removeItem(STORED_KEY)
+  } catch {
+    // A blocked storage must not break the page: the key still works for this
+    // view, it just is not remembered.
+  }
+}
+
 if (keyInput !== null) {
-  const saved = sessionStorage.getItem(STORED_KEY)
-  if (saved !== null && keyInput.value === '') {
+  const saved = readStoredKey()
+  if (saved !== '' && keyInput.value === '') {
     keyInput.value = saved
     void store.refresh()
   }
-  keyInput.addEventListener('change', () => {
-    sessionStorage.setItem(STORED_KEY, keyInput.value)
+  const remember = (): void => {
+    const value = keyInput.value.trim()
+    if (value !== '') storeKey(value)
+  }
+  keyInput.addEventListener('change', remember)
+  // Enter submits without leaving the field, and a change event does not fire in
+  // that case, so the key would be forgotten by the next visit.
+  keyInput.addEventListener('keydown', event => {
+    if (event.key === 'Enter') remember()
   })
 }
 
