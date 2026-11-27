@@ -890,6 +890,13 @@ type agentNode struct {
 	// ParentID is the conversation this one named as its parent, empty for a
 	// root. The fleet view needs it to tell a lead from a teammate.
 	ParentID string `json:"parentId,omitempty"`
+	// Role is "lead" for the top of a family and "teammate" for a member. A
+	// family whose lead issued no request has no session of its own, and this is
+	// how the roster still tells the reader which agent is in charge.
+	Role string `json:"role,omitempty"`
+	// Virtual names the parent id that has no session, when this node stands in
+	// for it. It is informational: the client does not need it.
+	Virtual string `json:"virtualParent,omitempty"`
 }
 
 // agentFamily assembles the tree rooted at id, walking children transitively.
@@ -902,8 +909,65 @@ func (s *store) agentFamily(id string) *agentNode {
 	if !ok {
 		return nil
 	}
+	// A member of a family resolves to the family's top, not to itself: the fleet
+	// is opened from the agent the operator is looking at, and a teammate that
+	// showed only itself would hide the work it belongs to. The walk stops at the
+	// first conversation whose parent is absent, which is either the true root or
+	// a lead that issued no request.
+	root = s.topOfLocked(root)
 	seen := map[string]bool{}
+	// A conversation that names a parent the store has no requests for is the top
+	// of its family as far as this proxy can see. That is the ordinary shape of a
+	// subagent: the lead issues no request of its own, so no session is created for
+	// it, and only its children's ParentID says it exists. Without this the family
+	// is a root with no members and the fleet draws one lonely agent.
+	if root.ParentID != "" {
+		if _, hasParent := s.sessions[root.ParentID]; !hasParent {
+			// The children of this family are keyed by the absent parent id, not by
+			// this conversation, so walking from root.ID would find none of the
+			// siblings. The tree is assembled around the parent it names, with this
+			// conversation as its first child.
+			node := s.buildNodeLocked(root, seen)
+			if node == nil {
+				return nil
+			}
+			node.Role = "lead"
+			node.Virtual = root.ParentID
+			for id, sibling := range s.sessions {
+				if id == root.ID || sibling.ParentID != root.ParentID {
+					continue
+				}
+				if built := s.buildNodeLocked(sibling, seen); built != nil {
+					node.Children = append(node.Children, *built)
+				}
+			}
+			sort.Slice(node.Children, func(i, j int) bool {
+				return node.Children[i].Context > node.Children[j].Context
+			})
+			return node
+		}
+	}
 	return s.buildNodeLocked(root, seen)
+}
+
+// topOfLocked walks parent links upward to the top of a family. A cycle cannot
+// run forever here: every visited id is remembered and the walk stops when it
+// repeats one.
+func (s *store) topOfLocked(start *session) *session {
+	if start == nil {
+		return nil
+	}
+	visited := map[string]bool{start.ID: true}
+	current := start
+	for current.ParentID != "" {
+		parent, ok := s.sessions[current.ParentID]
+		if !ok || visited[parent.ID] {
+			return current
+		}
+		visited[parent.ID] = true
+		current = parent
+	}
+	return current
 }
 
 func (s *store) buildNodeLocked(sess *session, seen map[string]bool) *agentNode {

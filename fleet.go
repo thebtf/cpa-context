@@ -47,12 +47,15 @@ func collectMembers(node *agentNode, self string, out *[]map[string]any) {
 	if node == nil {
 		return
 	}
-	role := "lead"
+	// A node that stands in for a parent with no requests is the lead of its
+	// family: its children are the teammates, and the roster has to say so or the
+	// view shows one unattached agent per child.
+	role := "teammate"
+	if node.Role == "lead" || (!node.IsSubagent && node.ParentID == "") {
+		role = "lead"
+	}
 	name := firstNonEmpty(node.AgentName, node.Label, node.ID)
 	phase := "active"
-	if node.IsSubagent || node.ParentID != "" {
-		role = "teammate"
-	}
 	if node.Requests == 0 {
 		phase = "provisioning"
 	}
